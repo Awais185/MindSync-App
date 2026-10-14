@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_video_detector_description">
+        MindSync uses this service to block apps you choose in parental controls (sends you Home)
+        and to detect video apps for wellness analysis. Required for reliable app blocking.
+    </string>
+</resources>

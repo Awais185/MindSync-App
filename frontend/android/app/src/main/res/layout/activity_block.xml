@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="24dp"
+    android:background="#F8F9FC">
+
+    <ImageView
+        android:layout_width="80dp"
+        android:layout_height="80dp"
+        android:src="@android:drawable/ic_secure"
+        android:layout_marginBottom="24dp"
+        android:importantForAccessibility="no" />
+
+    <TextView
+        android:id="@+id/blockTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="App Blocked"
+        android:textSize="28sp"
+        android:textStyle="bold"
+        android:textColor="#18181B"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/blockMessage"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="This application has been blocked by Parental Controls."
+        android:textSize="16sp"
+        android:textColor="#71717A"
+        android:gravity="center"
+        android:layout_marginBottom="32dp" />
+
+    <Button
+        android:id="@+id/btnGoHome"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Go to Home Screen"
+        android:padding="16dp"
+        android:backgroundTint="#8B5CF6"
+        android:textColor="#FFFFFF" />
+
+</LinearLayout>

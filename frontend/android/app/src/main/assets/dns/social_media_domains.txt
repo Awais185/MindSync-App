@@ -1,0 +1,89 @@
+# Social media — one domain per line; subdomains match automatically (*.prefix supported).
+# WhatsApp intentionally excluded (communication, not social browsing).
+
+# YouTube
+youtube.com
+www.youtube.com
+youtu.be
+youtubei.googleapis.com
+yt3.ggpht.com
+ytimg.com
+googlevideo.com
+
+# TikTok
+tiktok.com
+www.tiktok.com
+tiktokcdn.com
+musical.ly
+tiktokv.com
+byteoversea.com
+ibytedtos.com
+ipstatp.com
+muscdn.com
+
+# Instagram
+instagram.com
+www.instagram.com
+cdninstagram.com
+*.fbcdn.net
+
+# Facebook
+facebook.com
+www.facebook.com
+m.facebook.com
+fb.com
+fbcdn.net
+facebook.net
+graph.facebook.com
+edge-chat.facebook.com
+
+# Twitter / X
+twitter.com
+www.twitter.com
+x.com
+www.x.com
+t.co
+twimg.com
+api.twitter.com
+abs.twimg.com
+
+# Snapchat
+snapchat.com
+www.snapchat.com
+snap.com
+snapcdn.com
+sc-cdn.net
+snap-dev.net
+
+# Reddit
+reddit.com
+www.reddit.com
+redd.it
+redditmedia.com
+reddituploads.com
+redditstatic.com
+reddit-static.com
+
+# Pinterest
+pinterest.com
+www.pinterest.com
+pinimg.com
+
+# LinkedIn
+linkedin.com
+www.linkedin.com
+licdn.com
+
+# Other social platforms
+discord.com
+discord.gg
+discordapp.com
+telegram.org
+t.me
+threads.net
+mastodon.social
+tumblr.com
+vk.com
+weibo.com
+line.me
+messenger.com

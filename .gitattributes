@@ -1,8 +1,1 @@
-*.safetensors filter=lfs diff=lfs merge=lfs -text
-*.pkl filter=lfs diff=lfs merge=lfs -text
-*.bin filter=lfs diff=lfs merge=lfs -text
-*.pt filter=lfs diff=lfs merge=lfs -text
-*.pth filter=lfs diff=lfs merge=lfs -text
-*.onnx filter=lfs diff=lfs merge=lfs -text
-*.avi filter=lfs diff=lfs merge=lfs -text
-*.wmv filter=lfs diff=lfs merge=lfs -text
+backend/chat/weights/hf_emotion/model.safetensors filter=lfs diff=lfs merge=lfs -text

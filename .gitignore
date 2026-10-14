@@ -1,11 +1,19 @@
-﻿.env
+﻿# Environment files and credentials
+.env
 .env.*
 !.env.example
 !.env.sample
+**/secrets.json
+**/credentials.json
+**/*service-account*.json
 *.pem
 *.key
-secrets.json
-credentials.json
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Python environments, caches, and test output
 venv/
 .venv/
 env/
@@ -18,48 +26,68 @@ __pycache__/
 .tox/
 .nox/
 .coverage
+coverage/
 htmlcov/
 *.egg-info/
 dist/
 build/
+.ipynb_checkpoints/
+
+# Django local data and generated output
+db.sqlite3
+db.sqlite3-*
+*.log
 staticfiles/
 media/
-db.sqlite3
-db.sqlite3-journal
-.ipynb_checkpoints/
+
+# Model caches and generated experiment output
 .cache/
+model_cache/
 wandb/
 mlruns/
 lightning_logs/
 tensorboard/
+
+# Flutter and Dart generated files
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
 .pub-cache/
 .pub/
-coverage/
 .flutter-automation/
-**/build/
+**/flutter/ephemeral/
+**/Flutter/ephemeral/
+**/.plugin_symlinks/
+**/GeneratedPluginRegistrant.*
+**/generated_plugin_registrant.*
+**/generated_plugins.cmake
+
+# Android and Gradle generated files
 **/.gradle/
+**/.kotlin/
 **/local.properties
 **/captures/
 **/outputs/
+
+# Generated iOS Flutter configuration
+/frontend/ios/Flutter/Generated.xcconfig
+/frontend/ios/Flutter/flutter_export_environment.sh
+/frontend/ios/Flutter/ephemeral/
+/frontend/ios/Runner/GeneratedPluginRegistrant.h
+/frontend/ios/Runner/GeneratedPluginRegistrant.m
+
+# IDE and operating-system files
 .vscode/
 .idea/
 *.iml
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Explicitly excluded project data and bundles
 /website/
 /frontend.rar
 /backend/face_detection/face_video_model/OpenFace_2.2.0_win_x64/OpenFace_2.2.0_win_x64/processed/
-
-# Flutter generated files
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-**/flutter/ephemeral/
-**/Flutter/ephemeral/
-**/.plugin_symlinks/
-**/local.properties
+/backend/face_detection/face_video_model/OpenFace_2.2.0_win_x64/OpenFace_2.2.0_win_x64/
+/backend/behaviour medel/ensemble_final_model/
