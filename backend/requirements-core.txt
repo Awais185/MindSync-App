@@ -1,0 +1,10 @@
+# Lightweight fallback if `requirements.txt` (torch/transformers) is too heavy.
+# Prefer: pip install -r requirements.txt into backend/venv for the full app.
+
+Django>=5.0,<7
+djangorestframework>=3.14
+django-cors-headers>=4.3
+djangorestframework-simplejwt>=5.3
+python-dotenv>=1.0
+Pillow>=10.0
+numpy>=1.24.0

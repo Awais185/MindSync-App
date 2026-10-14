@@ -1,0 +1,4 @@
+# Optional: install for DeepFace + Facenet512 embeddings (large download).
+# pip install -r requirements-face-verify.txt
+deepface>=0.0.89
+tf-keras>=2.20.0

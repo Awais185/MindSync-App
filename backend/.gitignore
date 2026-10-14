@@ -1,0 +1,5 @@
+# Secrets and local env (never commit)
+.env
+
+# Single project venv — recreate with SETUP.md (do not commit)
+venv/

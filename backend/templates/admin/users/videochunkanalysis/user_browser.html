@@ -1,0 +1,54 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <h1>{{ title }}</h1>
+  <p>Select a user to view all recorded screen chunks and analysis results (newest first).</p>
+
+  {% if not user_rows %}
+  <p><strong>No video chunk analysis records yet.</strong> Records appear after the phone uploads 30s screen chunks while on YouTube, TikTok, etc.</p>
+  {% else %}
+  <table style="width:100%; border-collapse:collapse;">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:8px; border-bottom:1px solid #ccc;">User</th>
+        <th style="text-align:left; padding:8px; border-bottom:1px solid #ccc;">Email</th>
+        <th style="text-align:right; padding:8px; border-bottom:1px solid #ccc;">Chunks</th>
+        <th style="text-align:left; padding:8px; border-bottom:1px solid #ccc;">Latest recording</th>
+        <th style="text-align:left; padding:8px; border-bottom:1px solid #ccc;">Latest app</th>
+        <th style="text-align:left; padding:8px; border-bottom:1px solid #ccc;">Latest result</th>
+        <th style="text-align:left; padding:8px; border-bottom:1px solid #ccc;"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in user_rows %}
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid #eee;"><strong>{{ row.username }}</strong> (id {{ row.user_id }})</td>
+        <td style="padding:8px; border-bottom:1px solid #eee;">{{ row.email|default:"—" }}</td>
+        <td style="padding:8px; border-bottom:1px solid #eee; text-align:right;">{{ row.chunk_count }}</td>
+        <td style="padding:8px; border-bottom:1px solid #eee;">{{ row.latest_at|date:"Y-m-d H:i:s" }}</td>
+        <td style="padding:8px; border-bottom:1px solid #eee;">{{ row.latest_platform|default:"—" }}</td>
+        <td style="padding:8px; border-bottom:1px solid #eee;">{{ row.latest_behavior|default:"pending" }}</td>
+        <td style="padding:8px; border-bottom:1px solid #eee;">
+          <a class="button" href="{{ row.chunks_url }}">View all chunks →</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <p style="margin-top:24px;">
+    <a href="{% url 'admin:users_videochunkanalysis_changelist' %}?all=1">Show flat list of all chunks</a>
+  </p>
+</div>
+{% endblock %}
