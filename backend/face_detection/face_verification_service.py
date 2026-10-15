@@ -21,17 +21,39 @@ from .image_match import cosine_similarity_face_images
 logger = logging.getLogger(__name__)
 
 DEFAULT_THRESHOLD = 0.80
+MIN_MATCH_THRESHOLD = 0.80
 EMBEDDING_SIZE = 112
 
-insight_app = None
-try:
-    # pyrefly: ignore [missing-import]
-    from insightface.app import FaceAnalysis
-    # buffalo_sc is a very fast and lightweight MobileFaceNet/ArcFace model
-    insight_app = FaceAnalysis(name="buffalo_sc", root="./model_cache", providers=['CPUExecutionProvider'])
-    insight_app.prepare(ctx_id=0, det_size=(320, 320))
-except Exception as e:
-    logger.error("Failed to initialize InsightFace: %s", e)
+_insight_app: Any | None = None
+_insight_init_done = False
+
+
+def _get_insight_app() -> Any | None:
+    """Lazy-load InsightFace so API startup works without optional deps."""
+    global _insight_app, _insight_init_done
+    if _insight_init_done:
+        return _insight_app
+    _insight_init_done = True
+    try:
+        # pyrefly: ignore [missing-import]
+        from insightface.app import FaceAnalysis
+
+        root = os.environ.get("INSIGHTFACE_MODEL_ROOT", "./model_cache")
+        app = FaceAnalysis(
+            name=os.environ.get("INSIGHTFACE_MODEL", "buffalo_sc"),
+            root=root,
+            providers=["CPUExecutionProvider"],
+        )
+        app.prepare(ctx_id=0, det_size=(320, 320))
+        _insight_app = app
+        logger.info("InsightFace loaded (model=%s)", os.environ.get("INSIGHTFACE_MODEL", "buffalo_sc"))
+    except Exception as exc:
+        logger.info(
+            "InsightFace not available (%s); using DeepFace/OpenCV embeddings.",
+            exc,
+        )
+        _insight_app = None
+    return _insight_app
 
 
 def distance_to_probability(distance: float) -> float:
@@ -133,6 +155,7 @@ def _embedding_deepface(image_bytes: bytes) -> np.ndarray | None:
 
 
 def _embedding_insightface(image_bytes: bytes) -> np.ndarray | None:
+    insight_app = _get_insight_app()
     if insight_app is None:
         return None
     try:
@@ -195,7 +218,7 @@ def verify_face_pair(
     """
     Full pipeline. Returns API dict with matched, probability, distance, threshold.
     """
-    threshold = max(0.50, min(0.98, float(threshold)))
+    threshold = max(MIN_MATCH_THRESHOLD, min(0.98, float(threshold)))
 
     ok_frame, reject_reason, frame_meta = analyze_face_frame(
         probe_bytes, unlock_capture=unlock_capture
@@ -215,13 +238,22 @@ def verify_face_pair(
         }
 
     probe_emb = compute_embedding(probe_bytes)
-    ref_emb = list_to_embedding(enrolled_embedding)
+    # Always derive the reference from the enrolled still image so probe/ref use the same backend.
+    ref_emb = compute_embedding(enrolled_bytes)
     if ref_emb is None:
-        ref_emb = compute_embedding(enrolled_bytes)
+        ref_emb = list_to_embedding(enrolled_embedding)
 
     if probe_emb is None or ref_emb is None:
         distance = 1.0
         method = "no_face_detected"
+    elif probe_emb.shape != ref_emb.shape:
+        distance = 1.0
+        method = "embedding_dim_mismatch"
+        logger.warning(
+            "Face embedding dimension mismatch probe=%s ref=%s; treating as no match",
+            probe_emb.shape,
+            ref_emb.shape,
+        )
     else:
         distance = cosine_distance(probe_emb, ref_emb)
         method = "embedding"
@@ -244,10 +276,7 @@ def verify_face_pair(
 
 
 def ensure_profile_embedding(profile) -> list[float] | None:
-    """Compute and persist enrollment embedding when missing."""
-    existing = getattr(profile, "face_embedding", None) or []
-    if existing:
-        return existing
+    """Compute and persist enrollment embedding; refresh when stale or wrong size."""
     if not profile.face_image:
         return None
     try:
@@ -257,8 +286,10 @@ def ensure_profile_embedding(profile) -> list[float] | None:
         if emb is None:
             return None
         data = embedding_to_list(emb)
-        profile.face_embedding = data
-        profile.save(update_fields=["face_embedding"])
+        existing = getattr(profile, "face_embedding", None) or []
+        if not existing or len(existing) != len(data):
+            profile.face_embedding = data
+            profile.save(update_fields=["face_embedding"])
         return data
     except Exception as exc:
         logger.warning("Failed to store face embedding for user %s: %s", profile.user_id, exc)

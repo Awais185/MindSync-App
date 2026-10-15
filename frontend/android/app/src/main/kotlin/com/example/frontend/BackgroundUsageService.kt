@@ -212,7 +212,6 @@ class BackgroundUsageService : Service() {
 
     private fun maybeScheduleUnlockFaceVerify(force: Boolean = false) {
         if (!TrackerPrefs.faceVerified(this)) return
-        if (isMonitoredSocialForeground()) return
         if (CameraCaptureCoordinator.isFacialExpressionRecording()) return
         if (TrackerPrefs.isUnlockFaceCooldownActive(this)) {
             TrackerPrefs.setUnlockFaceSessionOk(this, true)
@@ -1098,7 +1097,7 @@ class BackgroundUsageService : Service() {
         }
     }
 
-    /** Face matched (≥50%) — start counting immediately for this user session. */
+    /** Face matched (≥80%) — start counting immediately for this user session. */
     internal fun onUnlockFaceVerifiedForTracking() {
         handler.post { collectAndSync() }
     }

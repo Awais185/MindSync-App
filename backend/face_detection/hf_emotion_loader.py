@@ -78,8 +78,14 @@ def load_image_classifier_with_fallback(
 ) -> HfImageClassifier:
     try:
         return load_image_classifier(primary_src, device_env=device_env)
-    except Exception:
-        logger.exception("HF classifier failed for %s; trying %s", primary_src, fallback_src)
-        if primary_src == fallback_src:
-            raise
-        return load_image_classifier(fallback_src, device_env=device_env)
+    except Exception as exc:
+        if primary_src != fallback_src:
+            logger.warning(
+                "HF classifier failed for %s (%s); trying %s",
+                primary_src,
+                exc,
+                fallback_src,
+            )
+            return load_image_classifier(fallback_src, device_env=device_env)
+        logger.exception("HF classifier failed for %s", primary_src)
+        raise

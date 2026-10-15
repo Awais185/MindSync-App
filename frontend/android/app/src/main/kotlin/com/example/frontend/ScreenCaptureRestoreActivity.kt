@@ -67,10 +67,10 @@ class ScreenCaptureRestoreActivity : Activity() {
         }
 
         /** User-initiated grant (onboarding button, home screen, MainActivity channel). */
-        fun requestExplicitly(context: Context) {
+        fun requestExplicitly(context: Context, requireLoggedInSession: Boolean = true) {
             val app = context.applicationContext
             if (ScreenCapturePermissionStore.hasPermission(app)) return
-            if (!TrackerPrefs.shouldAllowUsageCollection(app)) return
+            if (requireLoggedInSession && !TrackerPrefs.shouldAllowUsageCollection(app)) return
             val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val now = System.currentTimeMillis()
             if (now - prefs.getLong(KEY_LAST_ATTEMPT_MS, 0L) < 2_000L) return

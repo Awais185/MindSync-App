@@ -3,7 +3,10 @@ package com.example.frontend
 import android.os.Handler
 import android.view.Surface
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import com.google.mlkit.vision.common.InputImage
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.FallbackStrategy
@@ -27,7 +30,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Facial Expression Detection (independent from Face Mood Scan).
- * 20s front-camera clips while any trackable app is foreground.
+ * Front-camera clips (~30s) while a trackable app is foreground.
+ * Recording starts only after ML Kit sees a usable face (see [FacePresenceDetector]).
+ * Screen capture uses separate 30s MediaProjection chunks in [screenrecording].
  */
 class ScheduledFaceCaptureController(
     private val service: BackgroundUsageService,
@@ -42,6 +47,7 @@ class ScheduledFaceCaptureController(
         IDLE,
         INITIALIZING,
         READY,
+        WAITING_FOR_FACE,
         RECORDING,
         STOPPING,
         FINALIZING,
@@ -51,7 +57,9 @@ class ScheduledFaceCaptureController(
     private var camLifecycle: CamLifecycle? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var videoCapture: VideoCapture<Recorder>? = null
+    private var imageAnalysis: ImageAnalysis? = null
     private var activeRecording: Recording? = null
+    private var pendingRecordAttempt = 0
     private var activeOutputFile: File? = null
     private val captureInFlight = AtomicBoolean(false)
 
@@ -78,6 +86,16 @@ class ScheduledFaceCaptureController(
     }
 
     private val stopRunnable = Runnable { requestStopRecording(force = false) }
+
+    private val faceDetectTimeoutRunnable = Runnable {
+        if (cameraState != CameraRecState.WAITING_FOR_FACE) return@Runnable
+        MonitoringLog.i(
+            "Facial Expression Detection: no face in view — skipping clip | app:$activeAppName",
+        )
+        service.setCameraForegroundElevated(false)
+        scheduleCameraRelease()
+        finishCapture(success = false)
+    }
 
     private val releaseCameraRunnable = Runnable {
         unbindCamera()
@@ -160,6 +178,7 @@ class ScheduledFaceCaptureController(
         mainHandler.removeCallbacks(fiveMinuteRunnable)
         fiveMinuteTimerScheduled = false
         mainHandler.removeCallbacks(stopRunnable)
+        mainHandler.removeCallbacks(faceDetectTimeoutRunnable)
         mainHandler.removeCallbacks(releaseCameraRunnable)
         cancelRecording(success = false, force = true)
     }
@@ -183,6 +202,14 @@ class ScheduledFaceCaptureController(
 
     private fun tryRecordFace(ignoreCooldown: Boolean, reason: String) {
         if (!TrackerPrefs.shouldAllowUsageCollection(service)) return
+        if (TrackerPrefs.faceVerified(service) && !TrackerPrefs.unlockFaceSessionOk(service)) {
+            MonitoringLog.i(
+                "Facial Expression Detection: waiting for unlock face match before recording",
+            )
+            if (sessionActive) scheduleFiveMinuteTimer()
+            BackgroundUsageService.requestUnlockFaceVerify(service)
+            return
+        }
         if (
             ContextCompat.checkSelfPermission(
                 service,
@@ -236,7 +263,7 @@ class ScheduledFaceCaptureController(
         recordingStartedAtMs = 0L
         service.setCameraForegroundElevated(true)
         MonitoringLog.i(
-            "Facial Expression Detection: 20s recording starting | app:$activeAppName | attempt:${attempt + 1}",
+            "Facial Expression Detection: ${FACE_DURATION_SECONDS}s recording starting | app:$activeAppName | attempt:${attempt + 1}",
         )
         cameraInitExecutor.execute {
             try {
@@ -269,6 +296,7 @@ class ScheduledFaceCaptureController(
                     .build()
             val capture = VideoCapture.withOutput(recorder)
             videoCapture = capture
+            pendingRecordAttempt = attempt
             val preview =
                 Preview.Builder().build().also { p ->
                     p.setSurfaceProvider { request ->
@@ -286,20 +314,63 @@ class ScheduledFaceCaptureController(
                         }
                     }
                 }
+            val analysis =
+                ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+            imageAnalysis = analysis
+            analysis.setAnalyzer(cameraInitExecutor) { proxy ->
+                analyzeFrameForFace(proxy, capture)
+            }
             provider.bindToLifecycle(
                 lifecycle,
                 CameraSelector.DEFAULT_FRONT_CAMERA,
                 preview,
                 capture,
+                analysis,
             )
-            cameraState = CameraRecState.READY
-            mainHandler.postDelayed(
-                { startRecordingIfReady(capture, attempt) },
-                CAMERA_READY_DELAY_MS,
+            cameraState = CameraRecState.WAITING_FOR_FACE
+            MonitoringLog.i(
+                "Facial Expression Detection: waiting for face before ${FACE_DURATION_SECONDS}s record | app:$activeAppName",
             )
+            mainHandler.removeCallbacks(faceDetectTimeoutRunnable)
+            mainHandler.postDelayed(faceDetectTimeoutRunnable, FACE_DETECT_TIMEOUT_MS)
         } catch (e: Exception) {
             MonitoringLog.e("Face recording failed: camera bind — ${e.message}", e)
             handleBindFailure(e.message ?: "camera_bind", attempt)
+        }
+    }
+
+    private fun analyzeFrameForFace(
+        proxy: ImageProxy,
+        capture: VideoCapture<Recorder>,
+    ) {
+        if (cameraState != CameraRecState.WAITING_FOR_FACE) {
+            proxy.close()
+            return
+        }
+        val mediaImage = proxy.image
+        if (mediaImage == null) {
+            proxy.close()
+            return
+        }
+        val input =
+            InputImage.fromMediaImage(
+                mediaImage,
+                proxy.imageInfo.rotationDegrees,
+            )
+        FacePresenceDetector.detectPresence(input) { present ->
+            proxy.close()
+            if (!present || cameraState != CameraRecState.WAITING_FOR_FACE) {
+                return@detectPresence
+            }
+            mainHandler.post {
+                if (cameraState != CameraRecState.WAITING_FOR_FACE) return@post
+                mainHandler.removeCallbacks(faceDetectTimeoutRunnable)
+                cameraState = CameraRecState.READY
+                imageAnalysis?.clearAnalyzer()
+                startRecordingIfReady(capture, pendingRecordAttempt)
+            }
         }
     }
 
@@ -469,12 +540,15 @@ class ScheduledFaceCaptureController(
         camLifecycle?.destroy()
         camLifecycle = null
         videoCapture = null
+        imageAnalysis?.clearAnalyzer()
+        imageAnalysis = null
     }
 
     private fun unbindCamera() {
         unbindCameraImmediate()
         cameraProvider = null
         activeOutputFile = null
+        mainHandler.removeCallbacks(faceDetectTimeoutRunnable)
     }
 
     private fun persistAndUploadFace(tempFile: File) {
@@ -482,9 +556,19 @@ class ScheduledFaceCaptureController(
         val packageSnapshot = activePackage
         uploadExecutor.execute {
             try {
-                val identityOk = FacialExpressionUploader.verifyVideoIdentity(service, tempFile)
-                if (!identityOk) {
-                    MonitoringLog.w("Face video identity weak — saving clip anyway | app:$appNameSnapshot")
+                val requireIdentity = TrackerPrefs.faceVerified(service)
+                val identityOk =
+                    if (requireIdentity) {
+                        FacialExpressionUploader.verifyVideoIdentity(service, tempFile)
+                    } else {
+                        true
+                    }
+                if (requireIdentity && !identityOk) {
+                    MonitoringLog.i(
+                        "Face clip discarded — enrolled user not matched in recording | app:$appNameSnapshot",
+                    )
+                    tempFile.delete()
+                    return@execute
                 }
                 val persisted = MonitoringStorage.persistFaceClip(service, tempFile)
                 tempFile.delete()
@@ -520,6 +604,11 @@ class ScheduledFaceCaptureController(
                         recordingType = "facial_expression_detection",
                     )
                 if (!uploaded) {
+                    if (requireIdentity) {
+                        MonitoringLog.w(
+                            "Face clip upload failed — kept locally for retry with identity check",
+                        )
+                    }
                     MonitoringUploadQueue.enqueueFaceClip(
                         service,
                         persisted.absolutePath,
@@ -545,9 +634,9 @@ class ScheduledFaceCaptureController(
     }
 
     companion object {
-        private const val CHUNK_MS = 20_000L
+        private const val CHUNK_MS = 30_000L
         private const val FIVE_MINUTE_MS = 5 * 60 * 1000L
-        private const val FACE_DURATION_SECONDS = 20
+        private const val FACE_DURATION_SECONDS = 30
         private const val INITIAL_CAPTURE_DELAY_MS = 1_200L
         private const val CAMERA_READY_DELAY_MS = 1_500L
         private const val MIN_RECORD_BEFORE_STOP_MS = 5_000L
@@ -557,5 +646,6 @@ class ScheduledFaceCaptureController(
         private const val MAX_CAMERA_RETRIES = 3
         private const val MAX_INITIAL_CAPTURE_RETRIES = 8
         private const val MAX_NO_DATA_RETRIES = 3
+        private const val FACE_DETECT_TIMEOUT_MS = 12_000L
     }
 }

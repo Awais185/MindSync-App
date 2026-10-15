@@ -7,7 +7,11 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from face_detection.face_quality_gate import analyze_face_frame
-from face_detection.face_verification_service import distance_to_probability, verify_face_pair
+from face_detection.face_verification_service import (
+    compute_embedding,
+    distance_to_probability,
+    verify_face_pair,
+)
 
 
 def _solid_jpeg(w: int = 640, h: int = 480, color=(120, 120, 120)) -> bytes:
@@ -29,6 +33,21 @@ class FaceVerificationTests(unittest.TestCase):
         if reason_strict == "FRAME_BLURRY" and reason_unlock == "FRAME_BLURRY":
             pass  # same flat frame
         self.assertTrue(ok_strict is False or ok_unlock is False)
+
+    def test_same_jpeg_matches_itself_opencv_backend(self) -> None:
+        jpeg = _solid_jpeg()
+        emb = compute_embedding(jpeg)
+        if emb is None:
+            self.skipTest("No embedding backend available")
+        out = verify_face_pair(
+            probe_bytes=jpeg,
+            enrolled_bytes=jpeg,
+            enrolled_embedding=[0.0] * int(emb.size),  # stale wrong cache ignored
+            threshold=0.5,
+            unlock_capture=True,
+        )
+        self.assertTrue(out["matched"])
+        self.assertGreater(out["probability"], 0.9)
 
     def test_verify_rejected_returns_zero_probability(self) -> None:
         out = verify_face_pair(

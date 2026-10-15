@@ -16,7 +16,8 @@ from .identity import (
 )
 from .models import FacialExpressionCapture
 from .emotion_score_fallback import merge_emotion_fallback, openface_results_weak
-from .openface_pipeline import run_openface_and_analyze
+from .openface_pipeline import is_openface_available, run_openface_and_analyze
+from .video_au_tracker import run_cross_platform_video_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -84,14 +85,22 @@ def process_facial_expression_capture_sync(capture_id: int) -> bool:
 
     try:
         clip_cap = float(capture.duration_seconds or 20) + 10.0
-        analysis = run_openface_and_analyze(
-            input_video_path=capture.video.path,
-            max_peak_frames=3,
-            include_tracked_video=False,
-            fast_mode=True,
-            max_video_seconds=clip_cap,
-            prefer_reencode=True,
-        )
+        video_path = capture.video.path
+        if is_openface_available():
+            analysis = run_openface_and_analyze(
+                input_video_path=video_path,
+                max_peak_frames=3,
+                include_tracked_video=False,
+                fast_mode=False,
+                max_video_seconds=clip_cap,
+                prefer_reencode=True,
+            )
+        else:
+            analysis = run_cross_platform_video_analysis(
+                video_path,
+                fast_mode=False,
+                include_tracked_video=False,
+            )
         scores = dict(analysis.scores) if isinstance(analysis.scores, dict) else {}
         if openface_results_weak(scores):
             try:

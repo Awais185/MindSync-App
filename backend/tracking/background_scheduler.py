@@ -16,7 +16,18 @@ import sys
 import threading
 import time
 
+from django.db import connection
+from django.db.utils import OperationalError
+
 logger = logging.getLogger(__name__)
+
+
+def _tracking_tables_ready() -> bool:
+    try:
+        tables = set(connection.introspection.table_names())
+    except Exception:
+        return False
+    return 'tracking_videoclip' in tables
 
 _started = False
 _start_lock = threading.Lock()
@@ -58,6 +69,11 @@ def _should_autostart() -> bool:
 
 
 def _run_video_recovery_tick() -> None:
+    if not _tracking_tables_ready():
+        logger.debug(
+            'backend_sync_service: skip video recovery — run python manage.py migrate',
+        )
+        return
     from tracking.management.commands.recover_incomplete_chunk_results import Command
     from tracking.services.incomplete_chunks import process_incomplete_chunks
 
@@ -74,6 +90,14 @@ def _run_video_recovery_tick() -> None:
 
 
 def _run_facial_expression_tick() -> None:
+    if not _tracking_tables_ready():
+        return
+    try:
+        tables = set(connection.introspection.table_names())
+    except Exception:
+        return
+    if 'face_detection_facialexpressioncapture' not in tables:
+        return
     from face_detection.facial_expression_service import process_random_incomplete_batch
 
     limit = max(1, int(os.environ.get('MINDSYNC_FACE_BATCH_LIMIT', '10')))
@@ -90,6 +114,15 @@ def _video_recovery_loop() -> None:
     while True:
         try:
             _run_video_recovery_tick()
+        except OperationalError as exc:
+            if 'no such table' in str(exc).lower():
+                logger.warning(
+                    'backend_sync_service: database not migrated yet (%s); '
+                    'run: python manage.py migrate',
+                    exc,
+                )
+            else:
+                logger.exception('backend_sync_service: video recovery tick failed')
         except Exception:
             logger.exception('backend_sync_service: video recovery tick failed')
         time.sleep(interval)

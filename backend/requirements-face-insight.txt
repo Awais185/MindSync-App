@@ -1,0 +1,4 @@
+# ArcFace embeddings for reliable face match (recommended for production).
+# pip install -r requirements-face-insight.txt
+onnxruntime>=1.17,<2
+insightface>=0.7.3

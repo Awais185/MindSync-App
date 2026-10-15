@@ -1,10 +1,17 @@
 # Lightweight fallback if `requirements.txt` (torch/transformers) is too heavy.
 # Prefer: pip install -r requirements.txt into backend/venv for the full app.
+# macOS Intel + Python 3.12: use requirements-macos-intel-py312.txt instead.
 
 Django>=5.0,<7
+psycopg[binary]>=3.1,<4
 djangorestframework>=3.14
 django-cors-headers>=4.3
+django-celery-beat>=2.6
 djangorestframework-simplejwt>=5.3
 python-dotenv>=1.0
 Pillow>=10.0
 numpy>=1.24.0
+redis>=5.0
+stripe>=10.0
+requests>=2.31
+PyYAML>=6.0

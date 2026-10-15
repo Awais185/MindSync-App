@@ -1,8 +1,6 @@
 ﻿# Environment files and credentials
 .env
 .env.*
-!.env.example
-!.env.sample
 **/secrets.json
 **/credentials.json
 **/*service-account*.json

@@ -71,10 +71,16 @@ class AuthProfile {
   }
 }
 
-/// Login/signup use Django SQL (`backend/db.sqlite3`) via REST API only.
+/// Login/signup use Django REST API (PostgreSQL on the server) via REST only.
 /// Device SQLite is an offline cache after a successful server login.
-/// Firebase is not used for authentication.
+/// Django JWT + local SQLite cache only (no Firebase).
 class LocalAuthService {
+  LocalAuthService._();
+
+  static final LocalAuthService instance = LocalAuthService._();
+
+  factory LocalAuthService() => instance;
+
   static const _kFirstName = 'auth.firstName';
   static const _kProfession = 'auth.profession';
   static const _kEmail = 'auth.email';
@@ -104,6 +110,13 @@ class LocalAuthService {
 
   final LocalDbService _localDb = LocalDbService.instance;
   final DatabaseAuthService _database = DatabaseAuthService.instance;
+
+  Future<String?> getAccessToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString(_kAccessToken);
+    if (token == null || token.isEmpty) return null;
+    return token;
+  }
 
   Future<bool> tryRefreshAccessToken() async {
     final prefs = await SharedPreferences.getInstance();

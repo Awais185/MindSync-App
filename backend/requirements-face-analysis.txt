@@ -1,0 +1,12 @@
+# Deep Face Analysis: MediaPipe mesh landmarks + geometric AU scoring (macOS/Linux/Windows).
+# Install after requirements-macos-intel-py312.txt or full requirements.txt:
+#
+#   pip install -r requirements-face-analysis.txt
+#
+# If pip fails (disk full or opencv-contrib build), free ~2GB then:
+#   pip install 'mediapipe==0.10.21' --no-deps
+#   pip install 'numpy<2' absl-py attrs protobuf sentencepiece 'sounddevice>=0.4.4'
+# Face mesh uses existing opencv-python-headless; opencv-contrib is optional at runtime.
+
+mediapipe>=0.10.14,<0.11
+imageio-ffmpeg>=0.5.1

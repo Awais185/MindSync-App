@@ -8,7 +8,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Uploads 20s front-camera clips to POST /api/face/expression/upload/
+ * Uploads 30s front-camera clips to POST /api/face/expression/upload/
  * ([facial_expression_capture] on server) or /api/face/chunk/ fallback.
  */
 object FacialExpressionUploader {
@@ -18,7 +18,7 @@ object FacialExpressionUploader {
         sourceType: String,
         sourceAppName: String,
         sourcePackageName: String,
-        durationSeconds: Int = 20,
+        durationSeconds: Int = 30,
         verifyFace: Boolean = true,
         clientTimestampMs: Long = System.currentTimeMillis(),
         recordingType: String = "face_camera",
@@ -196,24 +196,35 @@ object FacialExpressionUploader {
 
     /** Extract one JPEG frame and verify against enrolled profile before persisting clips. */
     fun verifyVideoIdentity(context: Context, video: File): Boolean {
-        val frame = extractVideoFrameJpeg(context, video) ?: return false
-        return try {
-            FaceTrackVerify.verifyStillImage(context, frame)
-        } finally {
+        if (!TrackerPrefs.faceVerified(context)) return true
+        val sampleUs = longArrayOf(400_000L, 1_500_000L, 4_000_000L, 8_000_000L, 12_000_000L)
+        for (timeUs in sampleUs) {
+            val frame = extractVideoFrameJpeg(context, video, timeUs) ?: continue
             try {
-                frame.delete()
-            } catch (_: Exception) {
+                if (FaceTrackVerify.verifyStillImage(context, frame)) {
+                    return true
+                }
+            } finally {
+                try {
+                    frame.delete()
+                } catch (_: Exception) {
+                }
             }
         }
+        return false
     }
 
-    private fun extractVideoFrameJpeg(context: Context, video: File): File? {
+    private fun extractVideoFrameJpeg(
+        context: Context,
+        video: File,
+        timeUs: Long = 500_000L,
+    ): File? {
         return try {
             val retriever = android.media.MediaMetadataRetriever()
             retriever.setDataSource(video.absolutePath)
             val bitmap =
                 retriever.getFrameAtTime(
-                    500_000,
+                    timeUs,
                     android.media.MediaMetadataRetriever.OPTION_CLOSEST,
                 )
             retriever.release()

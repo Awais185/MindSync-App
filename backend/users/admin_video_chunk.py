@@ -12,13 +12,13 @@ from django.urls import reverse
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
-from tracking.services.behavior_analysis import analyze_and_update_video_chunk
-
 from .models import VideoChunkAnalysis
 
 
 @admin.action(description='Run behavior model on selected (from script_text)')
 def admin_run_behavior_model(modeladmin, request, queryset):
+    from tracking.services.behavior_analysis import analyze_and_update_video_chunk
+
     done = 0
     for row in queryset:
         if (row.script_text or '').strip():

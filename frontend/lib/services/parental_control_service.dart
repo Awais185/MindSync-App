@@ -1,11 +1,10 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../config/api_config.dart';
 import '../models/parent_content_monitor.dart';
+import 'api_client.dart';
 
 export '../models/parent_content_monitor.dart';
 
@@ -91,28 +90,12 @@ class ParentalControlService {
     await syncNativeHomeBlocker(await _readBlocked());
   }
 
-  Future<String?> _token() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth.accessToken');
-    if (token == null || token.isEmpty) return null;
-    return token;
-  }
-
   Future<ParentContentMonitorSnapshot> fetchContentMonitor() async {
-    final token = await _token();
-    if (token == null) return ParentContentMonitorSnapshot.empty;
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/api/auth/parent/content-monitor/'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
+      final json = await ApiClient.instance.getJson(
+        '/api/auth/parent/content-monitor/',
       );
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        return ParentContentMonitorSnapshot.empty;
-      }
-      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      if (json == null) return ParentContentMonitorSnapshot.empty;
       final items = (json['items'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(ParentContentMonitorItem.fromJson)
@@ -129,18 +112,10 @@ class ParentalControlService {
   }
 
   Future<List<ParentalAppRule>> fetchRules() async {
-    final token = await _token();
-    if (token == null) return const [];
-    final response = await http.get(
-      Uri.parse('${ApiConfig.baseUrl}/api/auth/parent/blocked-apps/'),
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-      },
+    final json = await ApiClient.instance.getJson(
+      '/api/auth/parent/blocked-apps/',
     );
-    if (response.statusCode < 200 || response.statusCode >= 300)
-      return const [];
-    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    if (json == null) return const [];
     final apps = (json['apps'] as List<dynamic>? ?? const [])
         .cast<Map<String, dynamic>>();
     final mapped = apps
@@ -183,16 +158,11 @@ class ParentalControlService {
     required String packageName,
     required bool blocked,
   }) async {
-    final token = await _token();
-    if (token == null) return false;
-    final response = await http.put(
-      Uri.parse('${ApiConfig.baseUrl}/api/auth/parent/blocked-apps/update/'),
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode({'package_name': packageName, 'blocked': blocked}),
+    final response = await ApiClient.instance.put(
+      '/api/auth/parent/blocked-apps/update/',
+      body: {'package_name': packageName, 'blocked': blocked},
     );
+    if (response == null) return false;
     final ok = response.statusCode >= 200 && response.statusCode < 300;
     if (!ok) return false;
 
@@ -238,8 +208,6 @@ class ParentalControlService {
 
   Future<void> syncInstalledApps() async {
     if (kIsWeb) return;
-    final token = await _token();
-    if (token == null) return;
     try {
       final apps = await _channel.invokeListMethod<Map<dynamic, dynamic>>(
         'getInstalledApps',
@@ -255,15 +223,9 @@ class ParentalControlService {
           )
           .toList();
 
-      await http.post(
-        Uri.parse(
-          '${ApiConfig.baseUrl}/api/auth/parent/installed-apps/report/',
-        ),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({'apps': payload}),
+      await ApiClient.instance.post(
+        '/api/auth/parent/installed-apps/report/',
+        body: {'apps': payload},
       );
     } catch (_) {}
   }

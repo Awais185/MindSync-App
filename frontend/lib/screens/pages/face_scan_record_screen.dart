@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../services/behavior_analysis_warmup.dart';
+
 /// Full-screen front-camera recorder for Deep Face Analysis (max 30s).
 class FaceScanRecordScreen extends StatefulWidget {
   const FaceScanRecordScreen({super.key});
@@ -31,6 +33,7 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(warmupBehaviorAnalysisModels());
     unawaited(_initCamera());
   }
 

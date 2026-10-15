@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import '../../services/analytics_data_service.dart';
+import '../../services/feature_permission_service.dart';
 import '../../services/screen_time_service.dart';
 import '../../models/late_night_sleep_snapshot.dart';
 import '../../widgets/late_night_activity_widgets.dart';
@@ -88,7 +89,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     description: 'Analytics require Usage Access to display your screen time history.',
                     icon: Icons.data_usage,
                     onAllow: () async {
-                      await ScreenTimeService.instance.openUsageSettings();
+                      await FeaturePermissionService.ensureUsageAccess(context);
                       await ScreenTimeService.instance.refreshNow();
                     },
                   );
@@ -106,7 +107,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     borderRadius: BorderRadius.circular(18),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.02),
+                        color: Colors.black.withValues(alpha: 0.02),
                         blurRadius: 8,
                         offset: const Offset(0, 2),
                       ),
@@ -189,7 +190,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     borderRadius: BorderRadius.circular(18),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.02),
+                        color: Colors.black.withValues(alpha: 0.02),
                         blurRadius: 8,
                         offset: const Offset(0, 2),
                       ),
@@ -563,7 +564,7 @@ class _RangeSwitch extends StatelessWidget {
             boxShadow: isSelected
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF6F39E8).withOpacity(0.3),
+                      color: const Color(0xFF6F39E8).withValues(alpha: 0.3),
                       blurRadius: 8,
                       offset: const Offset(0, 2),
                     ),
@@ -609,7 +610,7 @@ class _SleepCard extends StatelessWidget {
             borderRadius: BorderRadius.circular(28),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.02),
+                color: Colors.black.withValues(alpha: 0.02),
                 blurRadius: 10,
                 offset: const Offset(0, 2),
               ),
@@ -709,7 +710,7 @@ class _ScreenTimeCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -845,7 +846,7 @@ class _CategoriesCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -994,7 +995,7 @@ class _StressCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF0B66D8).withOpacity(0.3),
+            color: const Color(0xFF0B66D8).withValues(alpha: 0.3),
             blurRadius: 12,
             offset: const Offset(0, 4),
           ),
@@ -1058,7 +1059,7 @@ class _MoodFrequencyCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -1185,12 +1186,12 @@ class _InsightTile extends StatelessWidget {
           border: Border.all(color: const Color(0xFFE8E2FA), width: 1.1),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF6F39E8).withOpacity(0.06),
+              color: const Color(0xFF6F39E8).withValues(alpha: 0.06),
               blurRadius: 14,
               offset: const Offset(0, 6),
             ),
             BoxShadow(
-              color: Colors.black.withOpacity(0.03),
+              color: Colors.black.withValues(alpha: 0.03),
               blurRadius: 6,
               offset: const Offset(0, 2),
             ),

@@ -46,6 +46,19 @@ def finalize_daily_usage(user, target_date):
         end_time__lt=day_end
     )
     total_active_seconds = events_day.aggregate(t=Sum('usage_time'))['t'] or 0
+    from tracking.services.screentime_rollup import _session_total_seconds
+
+    stored = (
+        ScreenTime.objects.filter(user=user, date=target_date)
+        .values_list('total_screen_time', flat=True)
+        .first()
+        or 0
+    )
+    total_active_seconds = max(
+        int(total_active_seconds),
+        int(stored),
+        _session_total_seconds(user, target_date),
+    )
 
     # Sleep period: 10:00 PM of target_date to 5:00 AM of target_date + 1 day
     sleep_start = timezone.make_aware(datetime.combine(target_date, time(22, 0)), tz)
@@ -88,5 +101,16 @@ def finalize_daily_usage(user, target_date):
     st.sleep_time = sleep_seconds
     st.is_finalized = True
     st.save()
-    
+
+    try:
+        from tracking.services.screentime_rollup import (
+            roll_completed_day_into_weekly,
+            sync_weekly_monthly_tables,
+        )
+
+        roll_completed_day_into_weekly(user, target_date, total_active_seconds * 1000)
+        sync_weekly_monthly_tables(user)
+    except Exception:
+        pass
+
     return st

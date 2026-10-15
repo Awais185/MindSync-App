@@ -1,0 +1,26 @@
+# macOS Intel (x86_64) + Python 3.12 — PyTorch on PyPI is capped at 2.2.x here.
+# Use this when `pip install -r requirements.txt` fails on torch/tensorflow pins.
+#
+#   cd backend && source venv/bin/activate
+#   pip install -r requirements-macos-intel-py312.txt
+#   python manage.py migrate
+#   python manage.py runserver
+#
+# For auth/API only (skip HF emotion preload at startup):
+#   export MINDSYNC_SKIP_EMOTION_PRELOAD=1
+
+-r requirements-core.txt
+# psycopg included via requirements-core.txt
+# PyTorch 2.2.x wheels are built against NumPy 1.x — keep the stack aligned on Intel Mac.
+numpy>=1.26.4,<2
+opencv-python-headless==4.10.0.84
+pandas>=2.2,<4
+scipy>=1.13,<1.14
+scikit-learn>=1.5,<1.6
+transformers>=4.36,<5
+torch==2.2.2
+torchvision==0.17.2
+# Reliable face identity (optional but strongly recommended):
+# pip install -r requirements-face-insight.txt
+# Deep face scan video (mesh landmarks + AU overlay):
+# pip install -r requirements-face-analysis.txt

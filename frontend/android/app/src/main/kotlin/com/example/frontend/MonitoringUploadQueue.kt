@@ -73,8 +73,8 @@ object MonitoringUploadQueue {
                                 sourceType = "social_media",
                                 sourceAppName = payload.optString("app_name"),
                                 sourcePackageName = payload.optString("package_name"),
-                                durationSeconds = payload.optInt("duration_seconds", 20),
-                                verifyFace = false,
+                                durationSeconds = payload.optInt("duration_seconds", 30),
+                                verifyFace = true,
                                 recordingType = "facial_expression_detection",
                                 clientTimestampMs = payload.optLong("recorded_at_ms"),
                             )
@@ -93,6 +93,15 @@ object MonitoringUploadQueue {
                 if (ok) {
                     db.deleteUpload(row.id)
                     MonitoringLog.i("Upload queue delivered: ${row.kind} ${file.name}")
+                } else if (row.kind == "face" && TrackerPrefs.faceVerified(context)) {
+                    val identityOk = FacialExpressionUploader.verifyVideoIdentity(context, file)
+                    if (!identityOk) {
+                        db.deleteUpload(row.id)
+                        file.delete()
+                        MonitoringLog.i("Upload queue: face clip removed — identity no longer matches")
+                    } else {
+                        db.markUploadAttempt(row.id)
+                    }
                 } else {
                     db.markUploadAttempt(row.id)
                 }

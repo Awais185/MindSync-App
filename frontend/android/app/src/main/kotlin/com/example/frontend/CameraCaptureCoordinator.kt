@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Independent capture locks:
- * - [facialExpressionRecording] — 20s Facial Expression Detection (front camera)
+ * - [facialExpressionRecording] — 30s Facial Expression Detection (front camera)
  * - [faceMoodVerifyInProgress] — Face Mood Scan unlock still image only
  * - [unlockMoodVideoRecording] — 5–10s unlock mood video (separate session)
  * - [screenRecording] — 30s social screen chunks (MediaProjection)
@@ -78,7 +78,7 @@ object CameraCaptureCoordinator {
     }
 
     /**
-     * Facial Expression Detection — 20s front-camera clip when a foreground app opens.
+     * Facial Expression Detection — 30s front-camera clip when a foreground app opens.
      * Independent of Face Mood Scan and screen capture.
      */
     fun tryAcquireFacialExpressionRecording(

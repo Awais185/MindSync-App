@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -10,7 +9,7 @@ import '../../services/screen_time_service.dart';
 import '../../services/tracking_permissions_gate.dart';
 import '../../services/tracking_permission_prefs.dart';
 
-/// Step-by-step permission setup before tracking can run.
+/// All MindSync permissions on one screen; toggles reflect real OS state after settings.
 class PermissionOnboardingScreen extends StatefulWidget {
   const PermissionOnboardingScreen({
     super.key,
@@ -30,15 +29,41 @@ class PermissionOnboardingScreen extends StatefulWidget {
       _PermissionOnboardingScreenState();
 }
 
+class _PermissionRowData {
+  const _PermissionRowData({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.granted,
+    required this.onEnable,
+    this.required = true,
+    this.onSkip,
+    this.skipLabel,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final bool granted;
+  final Future<void> Function() onEnable;
+  final bool required;
+  final Future<void> Function()? onSkip;
+  final String? skipLabel;
+}
+
 class _PermissionOnboardingScreenState extends State<PermissionOnboardingScreen>
     with WidgetsBindingObserver {
-  static const _totalSteps = 5;
-
-  int _step = 0;
   bool _usageOk = false;
+  bool _cameraOk = false;
+  bool _micOk = false;
   bool _screenCaptureOk = false;
   bool _accessibilityOk = false;
-  bool _busy = false;
+  bool _overlayOk = false;
+  bool _screenCaptureSkipped = false;
+  bool _refreshing = false;
+
+  static const _accent = Color(0xFF6F39E8);
+
   @override
   void initState() {
     super.initState();
@@ -47,7 +72,7 @@ class _PermissionOnboardingScreenState extends State<PermissionOnboardingScreen>
       WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_completeSuccess()));
       return;
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_bootstrapPermissions()));
+    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_bootstrap()));
   }
 
   @override
@@ -59,16 +84,11 @@ class _PermissionOnboardingScreenState extends State<PermissionOnboardingScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(_onAppResumed());
+      unawaited(_refreshAll());
     }
   }
 
-  Future<void> _onAppResumed() async {
-    await _refreshChecks();
-  }
-
-  /// Skip the flow when permissions were saved earlier; otherwise open the first missing step.
-  Future<void> _bootstrapPermissions() async {
+  Future<void> _bootstrap() async {
     if (await TrackingPermissionsGate.isFullyGranted()) {
       if (!mounted) return;
       if (widget.embeddedInAppBootstrap) {
@@ -78,100 +98,94 @@ class _PermissionOnboardingScreenState extends State<PermissionOnboardingScreen>
       }
       return;
     }
-    await _refreshChecks();
-    if (!mounted) return;
-    final cam = await Permission.camera.status;
-    var step = 0;
-    if (_usageOk) {
-      step = cam.isGranted ? 2 : 1;
-      if (cam.isGranted && _screenCaptureOk) {
-        step = _accessibilityOk ? 4 : 3;
-      }
-    }
-    setState(() => _step = step);
+    _screenCaptureSkipped =
+        await TrackingPermissionPrefs.isScreenCaptureSkipped();
+    await _refreshAll();
   }
 
-  Future<void> _refreshChecks() async {
-    final usage = await ScreenTimeService.instance.hasUsageAccess();
-    final capture = await ScreenTimeService.instance.hasScreenCapturePermission();
-    final a11y = await ScreenTimeService.instance.hasAccessibilityService();
-    if (!mounted) return;
-    setState(() {
-      _usageOk = usage;
-      _screenCaptureOk = capture;
-      _accessibilityOk = a11y;
-    });
-    if (capture) {
-      await _persistPartialGrant(screenCapture: true);
-    }
-  }
-
-  Future<void> _openUsageSettings() async {
-    await ScreenTimeService.instance.openUsageSettings();
-  }
-
-  Future<void> _requestRuntimeMediaBatch() async {
-    setState(() => _busy = true);
+  Future<void> _refreshAll() async {
+    if (kIsWeb) return;
+    setState(() => _refreshing = true);
     try {
-      if (Platform.isAndroid) {
-        final sdk = (await DeviceInfoPlugin().androidInfo).version.sdkInt;
-        final perms = <Permission>[
-          Permission.camera,
-          Permission.microphone,
-        ];
-        if (sdk >= 33) {
-          perms.add(Permission.photos);
-          perms.add(Permission.videos);
-          perms.add(Permission.notification);
-        } else {
-          perms.add(Permission.storage);
-        }
-        final pending = <Permission>[];
-        for (final perm in perms) {
-          if (!(await perm.status).isGranted) {
-            pending.add(perm);
-          }
-        }
-        if (pending.isNotEmpty) {
-          await pending.request();
-        }
-      } else if (Platform.isIOS) {
-        final iosPerms = [
-          Permission.camera,
-          Permission.microphone,
-          Permission.photos,
-        ];
-        final pending = <Permission>[];
-        for (final perm in iosPerms) {
-          if (!(await perm.status).isGranted) {
-            pending.add(perm);
-          }
-        }
-        if (pending.isNotEmpty) {
-          await pending.request();
-        }
-      } else {
-        if (!(await Permission.camera.status).isGranted) {
-          await Permission.camera.request();
-        }
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _requestScreenCapture() async {
-    setState(() => _busy = true);
-    try {
-      final ok = await ScreenTimeService.instance.ensureScreenCapturePermission();
+      final usage = await ScreenTimeService.instance.hasUsageAccess();
+      final cam = await Permission.camera.status;
+      final mic = await Permission.microphone.status;
+      final capture = await ScreenTimeService.instance.hasScreenCapturePermission();
+      final a11y = await ScreenTimeService.instance.hasAccessibilityService();
+      final overlay = await ScreenTimeService.instance.hasOverlayPermission();
       if (!mounted) return;
-      setState(() => _screenCaptureOk = ok);
-      if (ok) {
+      setState(() {
+        _usageOk = usage;
+        _cameraOk = cam.isGranted;
+        _micOk = mic.isGranted;
+        _screenCaptureOk = capture;
+        _accessibilityOk = a11y;
+        _overlayOk = overlay;
+      });
+      if (capture) {
         await _persistPartialGrant(screenCapture: true);
       }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _refreshing = false);
     }
+  }
+
+  Future<void> _openUsage() async {
+    await ScreenTimeService.instance.openUsageSettings();
+  }
+
+  Future<void> _openAppPermissions() async {
+    await openAppSettings();
+  }
+
+  Future<void> _openScreenCapture() async {
+    if (!mounted) return;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Screen recording'),
+        content: const Text(
+          'This is not in App permissions. Android will show a separate '
+          'system dialog — tap Start now or Allow to enable short wellness clips.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: _accent),
+            child: const Text('Open system prompt'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    await ScreenTimeService.instance.launchScreenCaptureConsent();
+  }
+
+  Future<void> _skipScreenCapture() async {
+    await TrackingPermissionPrefs.markScreenCaptureSkipped();
+    if (!mounted) return;
+    setState(() => _screenCaptureSkipped = true);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Screen recording skipped — you can enable it later from Home or when a feature needs it.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _openAccessibility() async {
+    await ScreenTimeService.instance.openAccessibilitySettings();
+  }
+
+  Future<void> _openOverlay() async {
+    await ScreenTimeService.instance.openManageOverlaySettings();
   }
 
   Future<void> _persistPartialGrant({
@@ -192,41 +206,6 @@ class _PermissionOnboardingScreenState extends State<PermissionOnboardingScreen>
     );
   }
 
-  Future<void> _openAccessibility() async {
-    await ScreenTimeService.instance.openAccessibilitySettings();
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-    await _refreshChecks();
-  }
-
-  Future<void> _maybeOpenOverlaySettings() async {
-    if (!Platform.isAndroid && !Platform.isIOS) return;
-    if (await ScreenTimeService.instance.hasOverlayPermission()) return;
-    if (!mounted) return;
-    final go = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Display over other apps'),
-        content: const Text(
-          'Optional: lets MindSync show a block screen when you actively restrict an app. '
-          'This does not block apps by itself. You can skip and enable it later.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Skip'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Open settings'),
-          ),
-        ],
-      ),
-    );
-    if (go == true && mounted) {
-      await ScreenTimeService.instance.openManageOverlaySettings();
-    }
-  }
-
   Future<void> _completeSuccess() async {
     final cam = await Permission.camera.status;
     await TrackingPermissionPrefs.saveGrantSnapshot(
@@ -236,6 +215,7 @@ class _PermissionOnboardingScreenState extends State<PermissionOnboardingScreen>
           await ScreenTimeService.instance.hasScreenCapturePermission(),
       accessibility: _accessibilityOk ||
           await ScreenTimeService.instance.hasAccessibilityService(),
+      screenCaptureSkipped: _screenCaptureSkipped,
     );
 
     if (widget.embeddedInAppBootstrap) {
@@ -253,55 +233,112 @@ class _PermissionOnboardingScreenState extends State<PermissionOnboardingScreen>
     if (mounted) Navigator.of(context).pop(false);
   }
 
+  bool _requiredSatisfied() =>
+      _usageOk &&
+      _cameraOk &&
+      _accessibilityOk &&
+      (_screenCaptureOk || _screenCaptureSkipped);
+
   Future<void> _verifyAndFinish() async {
-    await _refreshChecks();
-    final usage = await ScreenTimeService.instance.hasUsageAccess();
-    final cam = await Permission.camera.status;
-    if (!mounted) return;
-    if (!usage || !cam.isGranted) {
+    await _refreshAll();
+    if (!_usageOk || !_cameraOk) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Usage access and Camera are required.'),
+          content: Text('Turn on Usage access and Camera to continue.'),
         ),
       );
-      setState(() => _step = 0);
       return;
     }
-    var screenOk = _screenCaptureOk ||
-        await ScreenTimeService.instance.hasScreenCapturePermission();
-    if (!screenOk) {
-      final granted =
-          await ScreenTimeService.instance.ensureScreenCapturePermission();
-      screenOk = granted;
-      if (mounted) setState(() => _screenCaptureOk = granted);
-      if (granted) {
-        await _persistPartialGrant(screenCapture: true);
-      }
-    }
-    if (!screenOk) {
+    if (!_screenCaptureOk && !_screenCaptureSkipped) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'Tap "Allow screen recording" and choose Start now on the system dialog.',
+            'Enable screen recording or tap Skip on that row to continue without it.',
           ),
         ),
       );
-      setState(() => _step = 2);
       return;
     }
     if (!_accessibilityOk) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'Enable the MindSync accessibility service to detect video apps automatically.',
+            'Enable the MindSync accessibility service in Settings.',
           ),
         ),
       );
-      setState(() => _step = 3);
       return;
     }
+    if (!_micOk && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Microphone is recommended for video scans — you can enable it later in app settings.',
+          ),
+        ),
+      );
+    }
     await _completeSuccess();
+  }
+
+  List<_PermissionRowData> _rows() {
+    return [
+      _PermissionRowData(
+        title: 'Usage access',
+        subtitle: 'Real screen time and per-app usage from Android',
+        icon: Icons.hourglass_bottom_rounded,
+        granted: _usageOk,
+        onEnable: _openUsage,
+        required: true,
+      ),
+      _PermissionRowData(
+        title: 'Camera',
+        subtitle: 'Face scan, mood capture, and unlock verification',
+        icon: Icons.camera_alt_outlined,
+        granted: _cameraOk,
+        onEnable: _openAppPermissions,
+        required: true,
+      ),
+      _PermissionRowData(
+        title: 'Microphone',
+        subtitle: 'Audio when recording face videos',
+        icon: Icons.mic_none_rounded,
+        granted: _micOk,
+        onEnable: _openAppPermissions,
+        required: false,
+      ),
+      _PermissionRowData(
+        title: 'Screen recording',
+        subtitle:
+            'Optional — system screen-capture prompt (Start now), not App info',
+        icon: Icons.screen_share_outlined,
+        granted: _screenCaptureOk,
+        onEnable: _openScreenCapture,
+        required: false,
+        onSkip: _screenCaptureOk ? null : _skipScreenCapture,
+        skipLabel: 'Skip for now',
+      ),
+      _PermissionRowData(
+        title: 'Accessibility',
+        subtitle: 'Detect video apps and optional parent blocking',
+        icon: Icons.accessibility_new_rounded,
+        granted: _accessibilityOk,
+        onEnable: _openAccessibility,
+        required: true,
+      ),
+      if (Platform.isAndroid || Platform.isIOS)
+        _PermissionRowData(
+          title: 'Display over other apps',
+          subtitle: 'Optional — block overlay when parent control is on',
+          icon: Icons.layers_outlined,
+          granted: _overlayOk,
+          onEnable: _openOverlay,
+          required: false,
+        ),
+    ];
   }
 
   @override
@@ -311,6 +348,8 @@ class _PermissionOnboardingScreenState extends State<PermissionOnboardingScreen>
         body: Center(child: CircularProgressIndicator()),
       );
     }
+
+    final rows = _rows();
 
     return PopScope(
       canPop: !widget.embeddedInAppBootstrap,
@@ -338,173 +377,209 @@ class _PermissionOnboardingScreenState extends State<PermissionOnboardingScreen>
         if (leave == true && mounted) await _abandon();
       },
       child: Scaffold(
+        backgroundColor: const Color(0xFFF3F4FA),
         appBar: AppBar(
-          title: const Text('Allow permissions'),
+          title: const Text('App permissions'),
+          backgroundColor: const Color(0xFFF3F4FA),
           automaticallyImplyLeading: !widget.embeddedInAppBootstrap,
+          actions: [
+            if (_refreshing)
+              const Padding(
+                padding: EdgeInsets.only(right: 16),
+                child: Center(
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              )
+            else
+              IconButton(
+                onPressed: _refreshAll,
+                icon: const Icon(Icons.refresh_rounded),
+                tooltip: 'Refresh status',
+              ),
+          ],
         ),
         body: ListView(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
           children: [
-            Text(
-              'Step ${_step + 1} of $_totalSteps',
-              style: Theme.of(context).textTheme.labelLarge,
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF6F39E8), Color(0xFF4B2AAD)],
+                ),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Allow MindSync to work in the background',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  SizedBox(height: 6),
+                  Text(
+                    'Tap a toggle to open the matching setting on your phone. '
+                    'When you allow access there, the toggle turns on here.',
+                    style: TextStyle(
+                      color: Color(0xFFE8DDFF),
+                      fontSize: 12,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 12),
-            if (_step == 0) ...[
-              Text('Usage access', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              const Text(
-                'Required for real screen time and per-app usage from Android (not estimated in-app).',
-              ),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: _busy ? null : _openUsageSettings,
-                icon: const Icon(Icons.settings),
-                label: const Text('Open usage access settings'),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _refreshChecks,
-                icon: const Icon(Icons.refresh),
-                label: Text(_usageOk ? 'Usage access: granted' : 'I enabled it — refresh'),
-              ),
-              const SizedBox(height: 20),
-              FilledButton(
-                onPressed: (!_usageOk || _busy) ? null : () => setState(() => _step = 1),
-                child: const Text('Continue'),
-              ),
-            ],
-            if (_step == 1) ...[
-              Text('Camera & microphone', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              const Text(
-                'Used for mood capture, face wellness clips, and optional background analysis.',
-              ),
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: _busy
-                    ? null
-                    : () async {
-                        await _requestRuntimeMediaBatch();
-                        if (!mounted) return;
-                        setState(() => _step = 2);
-                      },
-                child: _busy
-                    ? const SizedBox(
-                        height: 22,
-                        width: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Allow app permissions'),
-              ),
-            ],
-            if (_step == 2) ...[
-              Text('Screen recording', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              const Text(
-                'Android will show a system dialog (not in App settings). '
-                'Tap Allow below, then choose Start now or Allow on that popup. '
-                'This is required to save 30-second video clips while you use social apps.',
-              ),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: _busy ? null : _requestScreenCapture,
-                icon: const Icon(Icons.screen_share),
-                label: Text(
-                  _screenCaptureOk
-                      ? 'Screen recording: granted'
-                      : 'Allow screen recording',
+            const SizedBox(height: 16),
+            ...rows.map((row) => _PermissionToggleTile(
+                  data: row,
+                  accent: _accent,
+                  onToggle: () async {
+                    await row.onEnable();
+                  },
+                )),
+            const SizedBox(height: 20),
+            FilledButton(
+              onPressed: _requiredSatisfied() ? _verifyAndFinish : null,
+              style: FilledButton.styleFrom(
+                backgroundColor: _accent,
+                minimumSize: const Size.fromHeight(48),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
                 ),
               ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _refreshChecks,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Refresh status'),
-              ),
+              child: const Text('Continue to MindSync'),
+            ),
+            if (!_requiredSatisfied()) ...[
               const SizedBox(height: 8),
-              TextButton(
-                onPressed: _busy
-                    ? null
-                    : () => ScreenTimeService.instance.openAppInfoSettings(),
-                child: const Text('Open MindSync app info (optional)'),
-              ),
-              const SizedBox(height: 20),
-              FilledButton(
-                onPressed: (!_screenCaptureOk || _busy)
-                    ? null
-                    : () => setState(() => _step = 3),
-                child: const Text('Continue'),
-              ),
-            ],
-            if (_step == 3) ...[
-              Text('Video app detection & app blocking', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              const Text(
-                'Turn on the MindSync accessibility service so video apps can be detected '
-                'for monitoring. App blocking only runs when you enable it in Parent Control.',
-              ),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: _busy ? null : _openAccessibility,
-                icon: const Icon(Icons.accessibility_new),
-                label: Text(
-                  _accessibilityOk
-                      ? 'Accessibility: enabled'
-                      : 'Open accessibility settings',
+              Text(
+                'Required: usage access, camera, and accessibility. Screen recording is optional.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey.shade700,
                 ),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _refreshChecks,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Refresh status'),
-              ),
-              const SizedBox(height: 20),
-              FilledButton(
-                onPressed: (!_accessibilityOk || _busy)
-                    ? null
-                    : () => setState(() => _step = 4),
-                child: const Text('Continue'),
-              ),
-            ],
-            if (_step == 4) ...[
-              Text('Optional: overlay', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              const Text(
-                'Optional. Only used when you turn on app blocking in Parent Control — '
-                'social apps work normally until then.',
-              ),
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: _busy
-                    ? null
-                    : () async {
-                        setState(() => _busy = true);
-                        try {
-                          await _maybeOpenOverlaySettings();
-                        } finally {
-                          if (mounted) setState(() => _busy = false);
-                        }
-                      },
-                child: const Text('Configure overlay (optional)'),
-              ),
-              const SizedBox(height: 24),
-              FilledButton(
-                onPressed: _busy ? null : _verifyAndFinish,
-                child: const Text('Finish & start MindSync'),
               ),
             ],
             if (widget.embeddedInAppBootstrap) ...[
-              const SizedBox(height: 32),
+              const SizedBox(height: 20),
               Center(
                 child: TextButton(
-                  onPressed: _busy ? null : _abandon,
+                  onPressed: _abandon,
                   child: const Text('Sign out'),
                 ),
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PermissionToggleTile extends StatelessWidget {
+  const _PermissionToggleTile({
+    required this.data,
+    required this.accent,
+    required this.onToggle,
+  });
+
+  final _PermissionRowData data;
+  final Color accent;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onToggle,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+            child: Row(
+              children: [
+                Icon(data.icon, color: accent, size: 26),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              data.title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ),
+                          if (data.required)
+                            Text(
+                              'Required',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: accent.withValues(alpha: 0.85),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        data.subtitle,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF6E7381),
+                          height: 1.3,
+                        ),
+                      ),
+                      if (data.onSkip != null && data.skipLabel != null) ...[
+                        const SizedBox(height: 6),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton(
+                            onPressed: () => data.onSkip!(),
+                            style: TextButton.styleFrom(
+                              padding: EdgeInsets.zero,
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: Text(
+                              data.skipLabel!,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: accent,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                Switch.adaptive(
+                  value: data.granted,
+                  activeTrackColor: accent,
+                  activeThumbColor: Colors.white,
+                  onChanged: (_) => onToggle(),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

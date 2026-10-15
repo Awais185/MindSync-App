@@ -16,6 +16,8 @@ class TrackingPermissionsGate {
   static Future<bool> _coreTrackingGranted() async {
     final usage = await ScreenTimeService.instance.hasUsageAccess();
     if (!usage) return false;
+    final cam = await Permission.camera.status;
+    if (!cam.isGranted) return false;
     return true;
   }
 
@@ -35,24 +37,10 @@ class TrackingPermissionsGate {
 
   /// True when core OS permissions are granted (auto-heals stale setup flags).
   static Future<bool> isFullyGranted() async {
-    if (!await _coreTrackingGranted()) {
+    if (!await TrackingPermissionPrefs.isSetupMarkedDone()) {
       return false;
     }
-    if (!await TrackingPermissionPrefs.isSetupMarkedDone()) {
-      final cam = await Permission.camera.status;
-      final usage = await ScreenTimeService.instance.hasUsageAccess();
-      final screenCapture =
-          await ScreenTimeService.instance.hasScreenCapturePermission();
-      final accessibility =
-          await ScreenTimeService.instance.hasAccessibilityService();
-      await TrackingPermissionPrefs.saveGrantSnapshot(
-        usage: usage,
-        camera: cam.isGranted,
-        screenCapture: screenCapture,
-        accessibility: accessibility,
-      );
-    }
-    return true;
+    return _coreTrackingGranted();
   }
 
   /// After username/password succeeds. Skips UI if setup was already saved.

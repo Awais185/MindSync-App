@@ -291,6 +291,42 @@ class TrustedContact(models.Model):
         return self.name
 
 
+def _strip_near_white_logo_background(image_field, threshold: int = 242):
+    """Make near-white pixels transparent so logos blend on purple UI."""
+    if not image_field:
+        return
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+    except ImportError:
+        return
+
+    image_field.open('rb')
+    try:
+        raw = image_field.read()
+    finally:
+        image_field.close()
+    if not raw:
+        return
+
+    img = Image.open(BytesIO(raw)).convert('RGBA')
+    pixels = img.getdata()
+    cleaned = []
+    for r, g, b, a in pixels:
+        if r >= threshold and g >= threshold and b >= threshold:
+            cleaned.append((r, g, b, 0))
+        else:
+            cleaned.append((r, g, b, a))
+    img.putdata(cleaned)
+
+    out = BytesIO()
+    img.save(out, format='PNG')
+    out.seek(0)
+    base = (image_field.name or 'logo.png').rsplit('.', 1)[0]
+    image_field.save(f'{base}_transparent.png', out, save=False)
+
+
 class AppBranding(models.Model):
     app_name = models.CharField(max_length=120, default='MindSync')
     logo = models.ImageField(upload_to='branding/', blank=True, null=True)
@@ -304,6 +340,18 @@ class AppBranding(models.Model):
     class Meta:
         verbose_name = 'App Branding'
         verbose_name_plural = 'App Branding'
+
+    def save(self, *args, **kwargs):
+        logo_changed = bool(self.logo)
+        if self.pk:
+            try:
+                prior = AppBranding.objects.get(pk=self.pk)
+                logo_changed = prior.logo != self.logo and bool(self.logo)
+            except AppBranding.DoesNotExist:
+                pass
+        if logo_changed:
+            _strip_near_white_logo_background(self.logo)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.app_name

@@ -6,12 +6,15 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
-/// Central dev API settings — saved for USB tether + physical phone (May 2026).
+/// Central API settings (dev + production via dart-define).
+///
+/// Production: `--dart-define=BACKEND_BASE_URL=https://api.yourdomain.com`
+/// See [CONFIG.md] in the frontend folder.
 abstract final class ApiConfig {
   ApiConfig._();
 
-  /// PC USB tether IPv4 — update if `ipconfig` shows a different address.
-  static const String laptopHostIp = '172.24.168.80';
+  /// Optional LAN fallback when USB adb reverse is unavailable (set via --dart-define=DEV_LAN_HOST=…).
+  static const String laptopHostIp = '';
 
   static const int backendPort = 8000;
 
@@ -19,8 +22,17 @@ abstract final class ApiConfig {
   static const String physicalPhoneBaseUrl =
       'http://127.0.0.1:$backendPort';
 
-  static String get defaultPhysicalBaseUrl =>
-      'http://$laptopHostIp:$backendPort';
+  static String get defaultPhysicalBaseUrl {
+    final lan = _lanHostOverride.trim();
+    if (lan.isNotEmpty) {
+      return 'http://$lan:$backendPort';
+    }
+    final legacy = laptopHostIp.trim();
+    if (legacy.isNotEmpty) {
+      return 'http://$legacy:$backendPort';
+    }
+    return physicalPhoneBaseUrl;
+  }
 
   static const String _androidEmulator = 'http://10.0.2.2:8000';
 
@@ -74,17 +86,10 @@ abstract final class ApiConfig {
       return;
     }
 
-    try {
-      final probe = uri('/api/auth/login/');
-      final response =
-          await http.get(probe).timeout(const Duration(seconds: 4));
-      if (response.statusCode >= 200 && response.statusCode < 500) {
-        // ignore: avoid_print
-        print('MindSync: backend reachable at $baseUrl');
-        return;
-      }
-    } catch (_) {
-      // fall through to help text
+    if (await _probeBackend(baseUrl)) {
+      // ignore: avoid_print
+      print('MindSync: backend reachable at $baseUrl');
+      return;
     }
 
     // ignore: avoid_print
@@ -92,9 +97,11 @@ abstract final class ApiConfig {
     // ignore: avoid_print
     print('*** MindSync: backend NOT reachable at $baseUrl ***');
     // ignore: avoid_print
-    print('  1) Start backend: MindSync\\backend\\runserver.bat');
+    print('  1) Backend: cd backend && ./runserver.sh  (or runserver 0.0.0.0:8000)');
     // ignore: avoid_print
-    print('  2) USB + debugging on, then: adb reverse tcp:8000 tcp:8000');
+    print('  2) USB debugging: adb reverse tcp:8000 tcp:8000');
+    // ignore: avoid_print
+    print('     Or Wi‑Fi: frontend/scripts/run_android_device.sh');
     // ignore: avoid_print
     print('  3) Phone Chrome test: $baseUrl/admin/');
     // ignore: avoid_print
@@ -165,24 +172,52 @@ abstract final class ApiConfig {
     return v != 'false' && v != '0' && v != 'no';
   }
 
-  /// Always returns 127.0.0.1 when USE_USB_BACKEND=true (default).
-  /// No probing — adb reverse tcp:8000 tcp:8000 must be run before flutter run.
+  /// Picks the first reachable dev backend (USB adb reverse, then LAN).
   static Future<String> _resolveAndroidPhysicalUrl() async {
-    // LAN override takes priority if explicitly set
+    final candidates = <String>[];
+
+    if (_preferUsbAdbReverse) {
+      candidates.add(physicalPhoneBaseUrl);
+    }
+
     final override = _lanHostOverride.trim();
     if (override.isNotEmpty &&
         override != '127.0.0.1' &&
         !override.contains('localhost')) {
-      return 'http://$override:$backendPort';
+      candidates.add('http://$override:$backendPort');
     }
 
-    // USB adb reverse — always trust 127.0.0.1, no probe needed
+    final legacy = laptopHostIp.trim();
+    if (legacy.isNotEmpty) {
+      candidates.add('http://$legacy:$backendPort');
+    }
+
+    if (!_preferUsbAdbReverse) {
+      candidates.add(physicalPhoneBaseUrl);
+    }
+
+    for (final base in candidates) {
+      if (await _probeBackend(base)) {
+        return _stripTrailingSlash(base);
+      }
+    }
+
     if (_preferUsbAdbReverse) {
-      return physicalPhoneBaseUrl; // http://127.0.0.1:8000
+      return physicalPhoneBaseUrl;
     }
-
-    // Fallback: LAN IP
     return defaultPhysicalBaseUrl;
+  }
+
+  /// Login endpoint accepts GET (405) or POST — any 2xx–4xx means TCP reached Django.
+  static Future<bool> _probeBackend(String base) async {
+    try {
+      final probe = Uri.parse('${_stripTrailingSlash(base)}/api/auth/login/');
+      final response =
+          await http.get(probe).timeout(const Duration(seconds: 3));
+      return response.statusCode >= 200 && response.statusCode < 500;
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<void> _pushBaseUrlToNativeIfAndroid() async {
@@ -197,12 +232,8 @@ abstract final class ApiConfig {
 
     try {
       const channel = MethodChannel('mindsync/screen_time');
-      await channel.invokeMethod<void>('configureTracker', {
+      await channel.invokeMethod<void>('updateTrackerBaseUrl', {
         'baseUrl': baseUrl,
-        'token': '',
-        'userId': '',
-        'faceVerified': false,
-        'faceMatchPercent': 50.0,
       });
     } catch (_) {
       // ignore

@@ -15,10 +15,14 @@ import java.net.URL
 import java.util.Locale
 
 /**
- * POST still image to [/api/face/verify-track/] (default threshold 50%).
+ * POST still image to [/api/face/verify-track/] (default threshold 80%).
  */
 object FaceTrackVerify {
-    fun verifyStillImage(context: Context, imageFile: File): Boolean {
+    fun verifyStillImage(
+        context: Context,
+        imageFile: File,
+        applyMatchPause: Boolean = false,
+    ): Boolean {
         val baseUrl = TrackerPrefs.baseUrl(context)
         val token = TrackerPrefs.token(context)
         if (baseUrl.isBlank() || token.isBlank()) return false
@@ -63,9 +67,9 @@ object FaceTrackVerify {
         val pct = TrackerPrefs.faceMatchPercent(context)
         val threshold =
             if (pct <= 0.0) {
-                0.50
+                0.80
             } else {
-                (pct / 100.0).coerceIn(0.50, 0.98)
+                (pct / 100.0).coerceIn(0.80, 0.98)
             }
         val thresholdStr = String.format(Locale.US, "%.4f", threshold)
         val boundary = "----MindSyncVerify${System.currentTimeMillis()}"
@@ -104,11 +108,14 @@ object FaceTrackVerify {
                     ?.use { it.readText() }
                     .orEmpty()
             conn.disconnect()
-            if (code !in 200..299) return false
+            if (code !in 200..299) {
+                Log.w("FaceTrackVerify", "verify-track HTTP $code: $body")
+                return false
+            }
             val json = runCatching { JSONObject(body) }.getOrNull()
             val matched =
                 json?.optBoolean("matched", json?.optBoolean("match", false) ?: false) == true
-            if (matched) {
+            if (matched && applyMatchPause) {
                 TrackerPrefs.applyFaceMatchPause(context)
             }
             matched

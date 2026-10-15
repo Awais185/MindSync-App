@@ -36,6 +36,8 @@ class _MindSyncLogoState extends State<MindSyncLogo> {
             height: widget.height,
             width: widget.width,
             fit: widget.fit,
+            filterQuality: FilterQuality.high,
+            gaplessPlayback: true,
             errorBuilder: (context, error, stackTrace) => _fallbackLogo(),
           );
         }

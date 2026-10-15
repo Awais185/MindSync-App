@@ -424,7 +424,7 @@ class _ChatScreenState extends State<ChatScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFFF5F6FA),
         border: Border(
-          bottom: BorderSide(color: const Color(0xFFE5E5EA).withOpacity(0.5)),
+          bottom: BorderSide(color: const Color(0xFFE5E5EA).withValues(alpha: 0.5)),
         ),
       ),
       child: Row(
@@ -723,7 +723,7 @@ class _ChatScreenState extends State<ChatScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFFF5F6FA),
         border: Border(
-          top: BorderSide(color: const Color(0xFFE5E5EA).withOpacity(0.5)),
+          top: BorderSide(color: const Color(0xFFE5E5EA).withValues(alpha: 0.5)),
         ),
       ),
       child: Row(
@@ -736,7 +736,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 borderRadius: BorderRadius.circular(30),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.02),
+                    color: Colors.black.withValues(alpha: 0.02),
                     blurRadius: 8,
                     offset: const Offset(0, 2),
                   ),
@@ -768,7 +768,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 borderRadius: BorderRadius.circular(22),
                 boxShadow: [
                   BoxShadow(
-                    color: const Color(0xFF6F39E8).withOpacity(0.3),
+                    color: const Color(0xFF6F39E8).withValues(alpha: 0.3),
                     blurRadius: 8,
                     offset: const Offset(0, 2),
                   ),
@@ -877,7 +877,7 @@ class _AssistantBubble extends StatelessWidget {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 4,
             offset: const Offset(0, 1),
           ),
@@ -938,7 +938,7 @@ class _UserBubble extends StatelessWidget {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF6F39E8).withOpacity(0.2),
+            color: const Color(0xFF6F39E8).withValues(alpha: 0.2),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -973,7 +973,7 @@ class _QuickChip extends StatelessWidget {
         decoration: BoxDecoration(
           color: bg,
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: fg.withOpacity(0.2), width: 0.5),
+          border: Border.all(color: fg.withValues(alpha: 0.2), width: 0.5),
         ),
         child: Text(
           text,

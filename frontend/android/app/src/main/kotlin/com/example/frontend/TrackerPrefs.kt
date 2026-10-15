@@ -43,6 +43,15 @@ object TrackerPrefs {
     const val USAGE_HEALTH_LIMIT_EXPIRY_MS = 12L * 60L * 60L * 1000L
     private const val PREFS_SCREEN_SESSION = "mindsync_screen_session"
 
+    fun updateBaseUrl(context: Context, baseUrl: String) {
+        val trimmed = NetworkConfig.effectiveBaseUrl(baseUrl)
+        if (trimmed.isBlank()) return
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_BASE_URL, trimmed)
+            .apply()
+    }
+
     fun writeConfig(
         context: Context,
         baseUrl: String,
@@ -60,7 +69,7 @@ object TrackerPrefs {
             .putBoolean(KEY_FACE_VERIFIED, faceVerified)
             .putFloat(
                 KEY_FACE_MATCH_PERCENT,
-                if (faceMatchPercent > 0.0) faceMatchPercent.toFloat() else 50f,
+                if (faceMatchPercent > 0.0) faceMatchPercent.toFloat() else 80f,
             )
             .putBoolean(KEY_SCREEN_CAPTURE_ONBOARDING_DONE, screenCaptureOnboardingDone)
             .putBoolean(KEY_UNLOCK_FACE_SESSION_OK, !faceVerified)
@@ -292,10 +301,13 @@ object TrackerPrefs {
         }
     }
 
-    fun faceMatchPercent(context: Context): Double =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getFloat(KEY_FACE_MATCH_PERCENT, 0f)
-            .toDouble()
+    fun faceMatchPercent(context: Context): Double {
+        val raw =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getFloat(KEY_FACE_MATCH_PERCENT, 80f)
+        val pct = if (raw <= 0f) 80.0 else raw.toDouble()
+        return pct.coerceAtLeast(80.0)
+    }
 
     fun setParentalEnforcementEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

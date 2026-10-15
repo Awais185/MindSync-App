@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * After device unlock ([Intent.ACTION_USER_PRESENT]), silently captures one front-camera JPEG
  * (no visible preview), POSTs to [/api/face/verify-track/], and sets
- * [TrackerPrefs.setUnlockFaceSessionOk] when similarity meets the server threshold (default 50%).
+ * [TrackerPrefs.setUnlockFaceSessionOk] when similarity meets the server threshold (default 80%).
  *
  * After a successful match, no further scans for 5 minutes. After that window, one re-scan runs;
  * if it fails, retries every 1 minute until matched (then another 5-minute pause).
@@ -78,12 +78,9 @@ class UnlockFaceVerifier(
         if (!MonitoringPolicy.isScreenInteractive(service)) {
             return
         }
-        if (service.resolveMonitoredSocialForeground() != null) {
-            Log.d(TAG, "Unlock verify deferred — monitored social app is foreground")
-            return
-        }
         if (CameraCaptureCoordinator.isFacialExpressionRecording()) {
             Log.d(TAG, "Unlock verify deferred — facial expression recording active")
+            scheduleRetryIfNeeded()
             return
         }
         if (ContextCompat.checkSelfPermission(service, Manifest.permission.CAMERA) !=
@@ -167,9 +164,6 @@ class UnlockFaceVerifier(
         }
         if (!MonitoringPolicy.isScreenInteractive(service)) {
             cancelPendingRetries()
-            return
-        }
-        if (service.resolveMonitoredSocialForeground() != null) {
             return
         }
         if (CameraCaptureCoordinator.isFacialExpressionRecording()) {
@@ -311,7 +305,7 @@ class UnlockFaceVerifier(
             return
         }
 
-        val ok = FaceTrackVerify.verifyStillImage(service, file)
+        val ok = FaceTrackVerify.verifyStillImage(service, file, applyMatchPause = true)
         try {
             file.delete()
         } catch (_: Exception) {

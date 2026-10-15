@@ -5,7 +5,7 @@ import android.os.Handler
 
 /**
  * 1 Hz foreground monitor:
- * - Face capture (20s + 5 min repeat) for any trackable foreground app
+ * - Face capture (30s + 5 min repeat) for any trackable foreground app
  * - Screen recording chunks via [MindSyncMonitor] / [screenrecording.ScreenRecordingService]
  */
 class AppMonitoringCoordinator(

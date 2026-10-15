@@ -208,9 +208,11 @@ def _build_recommendations(dominant: str, scores: dict[str, float]) -> list[str]
     return recs
 
 
-def analyze_frame(raw_aus: dict[Any, Any]) -> dict[str, Any]:
+def analyze_frame(raw_aus: dict[Any, Any], *, quiet: bool = False) -> dict[str, Any]:
     """
     Master pipeline: normalize → visibility → summary → scores → dominant → matched → insights.
+
+    Set ``quiet=True`` when scoring many times during video processing (logs once at end).
     """
     aus = normalize_aus(raw_aus)
     visibility = compute_visibility(aus)
@@ -222,24 +224,25 @@ def analyze_frame(raw_aus: dict[Any, Any]) -> dict[str, Any]:
     recommendations = _build_recommendations(dominant, scores)
     behavioral_insights = _build_behavioral_insights(aus, au_summary)
 
-    if not aus:
-        print("[MindSync] NO FACE IN FRAME - no AUs in frame", flush=True)
+    if not quiet:
+        if not aus:
+            print("[MindSync] NO FACE IN FRAME - no AUs in frame", flush=True)
 
-    logger.info(
-        "[MindSync] AU count:%s | stress:%.2f | anxiety:%.2f | depression:%.2f | dominant:%s | visibility:%.2f",
-        len(aus),
-        scores.get("stress", 0.0),
-        scores.get("anxiety", 0.0),
-        scores.get("depression", 0.0),
-        dominant,
-        visibility,
-    )
-    print(
-        f"[MindSync] AU count:{len(aus)} | stress:{scores.get('stress', 0.0):.2f} | "
-        f"anxiety:{scores.get('anxiety', 0.0):.2f} | depression:{scores.get('depression', 0.0):.2f} | "
-        f"dominant:{dominant} | visibility:{visibility:.2f}",
-        flush=True,
-    )
+        logger.info(
+            "[MindSync] AU count:%s | stress:%.2f | anxiety:%.2f | depression:%.2f | dominant:%s | visibility:%.2f",
+            len(aus),
+            scores.get("stress", 0.0),
+            scores.get("anxiety", 0.0),
+            scores.get("depression", 0.0),
+            dominant,
+            visibility,
+        )
+        print(
+            f"[MindSync] AU count:{len(aus)} | stress:{scores.get('stress', 0.0):.2f} | "
+            f"anxiety:{scores.get('anxiety', 0.0):.2f} | depression:{scores.get('depression', 0.0):.2f} | "
+            f"dominant:{dominant} | visibility:{visibility:.2f}",
+            flush=True,
+        )
 
     return {
         "stress_score": scores["stress"],

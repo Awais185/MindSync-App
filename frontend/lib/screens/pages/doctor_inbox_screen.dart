@@ -69,7 +69,7 @@ class _DoctorInboxScreenState extends State<DoctorInboxScreen> {
                           borderRadius: BorderRadius.circular(18),
                           boxShadow: [
                             BoxShadow(
-                              color: Colors.black.withOpacity(0.03),
+                              color: Colors.black.withValues(alpha: 0.03),
                               blurRadius: 10,
                               offset: const Offset(0, 2),
                             ),
@@ -243,7 +243,7 @@ class _DoctorUserChatScreenState extends State<DoctorUserChatScreen> {
                                 style: TextStyle(
                                   fontSize: 10,
                                   color: mine
-                                      ? Colors.white.withOpacity(0.8)
+                                      ? Colors.white.withValues(alpha: 0.8)
                                       : const Color(0xFF8A8D98),
                                 ),
                               ),

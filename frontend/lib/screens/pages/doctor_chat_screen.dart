@@ -143,7 +143,7 @@ class _DoctorChatScreenState extends State<DoctorChatScreen> {
                                     style: TextStyle(
                                       fontSize: 10,
                                       color: isMine
-                                          ? Colors.white.withOpacity(0.8)
+                                          ? Colors.white.withValues(alpha: 0.8)
                                           : const Color(0xFF8A8D98),
                                     ),
                                   ),

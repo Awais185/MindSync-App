@@ -37,7 +37,10 @@ class ScreenTimeSaveDayView(views.APIView):
         roll_completed_day_into_weekly(user, day, total_ms)
         rolled_week = maybe_roll_weekly_to_monthly(user, timezone.now().date())
         rolled_month = maybe_reset_monthly_after_30_days(user, timezone.now().date())
-        sync_screen_time_seconds_row(user, total_seconds=total_ms // 1000, day=day)
+        if day < timezone.now().date():
+            from users.services.daily_rollup import finalize_daily_usage
+
+            finalize_daily_usage(user, day)
 
         return response.Response(
             {

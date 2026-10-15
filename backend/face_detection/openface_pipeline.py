@@ -35,9 +35,19 @@ def _feature_extraction_exe() -> str:
     return os.path.join(OPENFACE_ROOT, "FeatureExtraction.exe")
 
 
+def is_openface_available() -> bool:
+    """OpenFace Windows binary is optional; macOS/Linux use emotion-model fallback."""
+    exe = _feature_extraction_exe()
+    if not os.path.isfile(exe):
+        return False
+    if exe.lower().endswith(".exe") and os.name != "nt":
+        return False
+    return True
+
+
 def _ensure_openface_available() -> None:
     exe = _feature_extraction_exe()
-    if not os.path.exists(exe):
+    if not is_openface_available():
         raise RuntimeError(f"OpenFace executable not found at: {exe}")
 
 
@@ -89,6 +99,14 @@ def _ffmpeg_error_detail(proc: subprocess.CompletedProcess[str]) -> str:
     if useful:
         return " | ".join(useful[-6:])[:450]
     return lines[-1][:450] if lines else "FFmpeg failed with no output."
+
+
+def ffmpeg_available() -> bool:
+    try:
+        _ffmpeg_exe()
+        return True
+    except RuntimeError:
+        return False
 
 
 def _ffmpeg_exe() -> str:
@@ -299,6 +317,22 @@ def _openface_timeout_seconds(video_duration_sec: float, *, fast_mode: bool) -> 
     return max(120, min(900, estimated))
 
 
+def open_cv_video_writer(
+    output_path: str,
+    fps: float,
+    width: int,
+    height: int,
+) -> cv2.VideoWriter | None:
+    """Try several FourCC values (macOS OpenCV often rejects mp4v alone)."""
+    for code in ("avc1", "mp4v", "H264", "MJPG"):
+        fourcc = cv2.VideoWriter_fourcc(*code)
+        w = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        if w.isOpened():
+            return w
+        w.release()
+    return None
+
+
 def _prepare_video_opencv(
     input_path: str,
     output_path: str,
@@ -338,9 +372,8 @@ def _prepare_video_opencv(
                 frame = cv2.resize(frame, (max_width, nh), interpolation=cv2.INTER_AREA)
             if writer is None:
                 h, w = frame.shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                writer = cv2.VideoWriter(output_path, fourcc, target_fps, (w, h))
-                if not writer.isOpened():
+                writer = open_cv_video_writer(output_path, target_fps, w, h)
+                if writer is None or not writer.isOpened():
                     raise RuntimeError("Could not create OpenCV output video writer.")
             writer.write(frame)
             written += 1
@@ -530,12 +563,27 @@ def prepare_unified_analysis_video(
         tempfile.gettempdir(),
         f"mindsync_analysis_{uuid.uuid4().hex[:10]}.mp4",
     )
-    duration = _normalize_video_for_openface(
-        input_video_path,
-        out_path,
-        fast_mode=fast_mode,
-        prefer_reencode=True,
-    )
+    prefer_reencode = ffmpeg_available()
+    try:
+        duration = _normalize_video_for_openface(
+            input_video_path,
+            out_path,
+            fast_mode=fast_mode,
+            prefer_reencode=prefer_reencode,
+        )
+    except RuntimeError:
+        ok, _ = _validate_video_integrity(input_video_path)
+        if ok and decoded_in >= 2:
+            shutil.copy2(input_video_path, out_path)
+            duration = _video_duration_seconds(out_path)
+            if duration <= 0:
+                duration = decoded_in / 12.0
+            log.warning(
+                "DeepFace prep: using original upload (ffmpeg=%s)",
+                prefer_reencode,
+            )
+        else:
+            raise
     decoded_out = _count_readable_frames(out_path)
     log.info(
         "DeepFace unified prep: in_frames=%s in_bytes=%s out_frames=%s out=%s duration=%.2fs fast_mode=%s",
@@ -601,6 +649,40 @@ class OpenFaceAnalysisResult:
     recommendations: list[str]
     tracked_video_bytes: bytes | None
     tracked_video_ext: str
+
+
+def build_emotion_only_analysis(
+    *,
+    deepface_video: dict[str, Any],
+    chat_video: dict[str, Any],
+) -> OpenFaceAnalysisResult:
+    """DeepFace + HF emotion path when OpenFace is not installed (e.g. Mac dev)."""
+    from .emotion_score_fallback import merge_emotion_fallback
+
+    scores = merge_emotion_fallback(
+        {
+            "active_aus": [],
+            "face_visibility_ratio": 0.0,
+            "max_score": 0,
+            "stress_score": 0,
+            "anxiety_score": 0,
+            "depression_score": 0,
+            "dominant_state": "neutral",
+        },
+        deepface_video=deepface_video,
+        chat_video=chat_video,
+    )
+    visibility = float(scores.get("face_visibility_ratio") or 0.0)
+    return OpenFaceAnalysisResult(
+        scores=scores,
+        peak_timestamps=[],
+        face_visibility_ratio=visibility,
+        au_summary=list(scores.get("au_summary") or []),
+        behavioral_insights=list(scores.get("behavioral_insights") or []),
+        recommendations=list(scores.get("recommendations") or []),
+        tracked_video_bytes=None,
+        tracked_video_ext="mp4",
+    )
 
 
 def run_openface_and_analyze(

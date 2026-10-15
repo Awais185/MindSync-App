@@ -155,6 +155,18 @@ def _predict_jit(model, pil_image, labels: list[str]) -> tuple[str, float]:
     return label, float(conf.cpu())
 
 
+def _local_hf_weights_usable(local: Path) -> bool:
+    if not local.is_dir() or not (local / "config.json").is_file():
+        return False
+    for sf in local.glob("*.safetensors"):
+        try:
+            if sf.stat().st_size < 10_000:
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def _emotion_pipeline_kwargs(model_src: str) -> dict[str, Any]:
     """Build kwargs so local folders do not hit the Hub; hub ids stay online."""
     device_env = os.environ.get("EMOTION_DEVICE", "").strip()
@@ -173,9 +185,15 @@ def _get_hf_pipeline():
 
             local = _hf_local_dir()
             hub_id = _hf_model_id()
-            if local.is_dir() and (local / "config.json").is_file():
+            if _local_hf_weights_usable(local):
                 src = str(local.resolve())
             else:
+                if local.is_dir() and (local / "config.json").is_file():
+                    logger.warning(
+                        "Ignoring corrupt or incomplete HF weights at %s — using hub %s",
+                        local,
+                        hub_id,
+                    )
                 src = hub_id
             logger.info("Loading HF emotion classifier from: %s", src)
             device_env = os.environ.get("EMOTION_DEVICE", "").strip()

@@ -1,0 +1,25 @@
+# PostgreSQL for MindSync backend (local dev).
+# Start: docker compose up -d
+# Stop:  docker compose down
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mindsync-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mindsync
+      POSTGRES_USER: mindsync
+      POSTGRES_PASSWORD: mindsync
+    ports:
+      - "5432:5432"
+    volumes:
+      - mindsync_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mindsync -d mindsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mindsync_pg_data:

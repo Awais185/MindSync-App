@@ -95,11 +95,11 @@ class _DisclaimerScreenState extends State<DisclaimerScreen> {
                       width: double.infinity,
                       padding: const EdgeInsets.all(24),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.9),
+                        color: Colors.white.withValues(alpha: 0.9),
                         borderRadius: BorderRadius.circular(32),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.04),
+                            color: Colors.black.withValues(alpha: 0.04),
                             blurRadius: 20,
                             offset: const Offset(0, 8),
                           ),
@@ -192,7 +192,7 @@ class _DisclaimerScreenState extends State<DisclaimerScreen> {
                     const SizedBox(height: 20),
 
                     Material(
-                      color: Colors.white.withOpacity(0.85),
+                      color: Colors.white.withValues(alpha: 0.85),
                       borderRadius: BorderRadius.circular(20),
                       child: InkWell(
                         onTap: () => setState(() => _agreed = !_agreed),

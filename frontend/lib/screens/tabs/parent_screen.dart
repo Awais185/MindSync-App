@@ -7,6 +7,7 @@ import '../../services/dns_filter_service.dart';
 import '../../services/parental_control_service.dart';
 import '../../services/local_auth_service.dart';
 import '../../services/plan_access_service.dart';
+import '../../services/feature_permission_service.dart';
 import '../../services/screen_time_service.dart';
 import '../../services/social_media_usage_limit_store.dart';
 import '../../utils/social_app_branding.dart';
@@ -380,7 +381,7 @@ class _ParentScreenState extends State<ParentScreen>
                     'Parent controls need accessibility service to enforce app restrictions.',
                 icon: Icons.accessibility_new,
                 onAllow: () async {
-                  await ScreenTimeService.instance.openAccessibilitySettings();
+                  await FeaturePermissionService.ensureAccessibility(context);
                 },
               ),
               const SizedBox(height: 20),
@@ -393,7 +394,7 @@ class _ParentScreenState extends State<ParentScreen>
                     'MindSync needs "Display over other apps" permission to block restricted apps.',
                 icon: Icons.layers,
                 onAllow: () async {
-                  await ScreenTimeService.instance.openManageOverlaySettings();
+                  await FeaturePermissionService.ensureOverlay(context);
                 },
               ),
               const SizedBox(height: 20),
@@ -494,7 +495,7 @@ class _UserStrip extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -700,8 +701,9 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
             final usedMinutes = (usedSeconds / 60).ceil();
             final limitMinutes = limitState.limitMinutes;
             final hasLimit = limitState.isActive && limitMinutes != null;
-            final progress = hasLimit && limitMinutes! > 0
-                ? (usedMinutes / limitMinutes).clamp(0.0, 1.0)
+            final activeLimit = limitMinutes ?? 0;
+            final progress = hasLimit && activeLimit > 0
+                ? (usedMinutes / activeLimit).clamp(0.0, 1.0)
                 : 0.0;
             final pct = (progress * 100).round();
 
@@ -712,7 +714,7 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
                 borderRadius: BorderRadius.circular(28),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.02),
+                    color: Colors.black.withValues(alpha: 0.02),
                     blurRadius: 10,
                     offset: const Offset(0, 2),
                   ),
@@ -786,7 +788,7 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
                             const SizedBox(height: 4),
                             Text(
                               hasLimit
-                                  ? 'OF ${_formatMinutes(limitMinutes!).toUpperCase()}'
+                                  ? 'OF ${_formatMinutes(activeLimit).toUpperCase()}'
                                   : 'NO LIMIT SET',
                               style: const TextStyle(
                                 fontSize: 12,
@@ -837,11 +839,11 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
                     width: double.infinity,
                     child: OutlinedButton.icon(
                       onPressed: () =>
-                          _pickAndSaveLimit(hasLimit ? limitMinutes : null),
+                          _pickAndSaveLimit(hasLimit ? activeLimit : null),
                       icon: const Icon(Icons.edit_calendar, size: 18),
                       label: Text(
                         hasLimit
-                            ? 'Edit social limit (${_formatMinutes(limitMinutes!)})'
+                            ? 'Edit social limit (${_formatMinutes(activeLimit)})'
                             : 'Set social media limit',
                       ),
                     ),
@@ -929,7 +931,7 @@ class _ContentMonitorCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -1116,7 +1118,7 @@ class _ContentTimeCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -1212,7 +1214,7 @@ class _AppRestrictionsCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -1301,7 +1303,7 @@ class _SafetyControlsCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),

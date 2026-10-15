@@ -14,7 +14,7 @@ from django.db.utils import OperationalError, ProgrammingError
 from rest_framework import parsers, permissions, response, status, views
 
 from chat.models import ChatMessage
-from face_detection.image_match import cosine_similarity_face_images
+from face_detection.profile_face_verify import verify_probe_for_user
 from users.models import ScreenUsageEvent, UserProfile, VideoChunkAnalysis
 
 from .models import FaceVerificationEvent, ScreenTime, VideoClip
@@ -239,8 +239,8 @@ class ScreenTimeTodayView(views.APIView):
 class FaceVerifyView(views.APIView):
     """
     POST /api/face-verify/
-    multipart: image (live face). Compares to enrolled face using cosine similarity on normalized RGB vectors.
-    Default threshold 0.5 (override with FACE_COSINE_THRESHOLD).
+    multipart: image (live face). Compares to the authenticated user's enrolled face
+    (same embedding pipeline as /api/face/verify-track/).
     """
 
     permission_classes = (permissions.IsAuthenticated,)
@@ -250,34 +250,56 @@ class FaceVerifyView(views.APIView):
         if 'image' not in request.data:
             return response.Response({'error': 'image is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            profile = UserProfile.objects.select_related('user').get(user=request.user)
-        except UserProfile.DoesNotExist:
-            return response.Response({'error': 'Profile not found'}, status=status.HTTP_400_BAD_REQUEST)
+        uploaded = request.data['image'].read()
+        unlock_capture = str(
+            request.data.get('source') or request.data.get('capture_context') or ''
+        ).strip().lower() in {'unlock', 'background', 'unlock_verify'}
 
+        raw_thr = request.data.get('match_threshold') or os.environ.get(
+            'FACE_VERIFY_TRACK_THRESHOLD',
+            os.environ.get('FACE_MATCH_THRESHOLD', os.environ.get('FACE_COSINE_THRESHOLD', '0.80')),
+        )
+        try:
+            threshold = float(raw_thr)
+        except (TypeError, ValueError):
+            threshold = 0.80
+
+        profile, result = verify_probe_for_user(
+            request.user,
+            uploaded,
+            threshold=threshold,
+            unlock_capture=unlock_capture,
+        )
+        if profile is None:
+            return response.Response(
+                {'error': result.get('error', 'Profile not found'), 'allowed': False},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if not profile.face_image:
             return response.Response(
                 {'error': 'Face not enrolled', 'allowed': False},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        uploaded = request.data['image'].read()
-        with profile.face_image.open('rb') as enrolled_f:
-            enrolled_bytes = enrolled_f.read()
-
-        similarity = cosine_similarity_face_images(uploaded, enrolled_bytes)
-        threshold = float(os.environ.get('FACE_COSINE_THRESHOLD', '0.5'))
-        allowed = similarity >= threshold
-
+        matched = bool(result.get('matched'))
+        probability = float(result.get('probability') or 0.0)
         return response.Response(
             {
-                'allowed': allowed,
-                'similarity': similarity,
-                'similarity_percent': round(similarity * 100.0, 2),
-                'threshold': threshold,
+                'allowed': matched,
+                'matched': matched,
+                'match': matched,
+                'similarity': probability,
+                'similarity_percent': round(probability * 100.0, 2),
+                'probability': result.get('probability'),
+                'distance': result.get('distance'),
+                'threshold': result.get('threshold'),
+                'status': result.get('status'),
+                'method': result.get('method'),
+                'reject_reason': result.get('reject_reason'),
                 'warning': None
-                if allowed
+                if matched
                 else 'Face does not match enrolled profile. Tracking and recording are disabled.',
+                **{k: v for k, v in result.items() if k.startswith('laplacian') or k == 'face_area_percent'},
             },
             status=status.HTTP_200_OK,
         )
@@ -305,7 +327,7 @@ class FaceVerificationEventView(views.APIView):
             screen_on_timestamp=data.get('screen_on_timestamp'),
             session_duration_seconds=int(data.get('session_duration_seconds') or 0),
             verified_face_match_percent=match_percent,
-            is_verified=match_percent >= 60.0,
+            is_verified=match_percent >= 80.0,
             app_usage_stats=data.get('app_usage_stats') or {},
         )
         return response.Response(

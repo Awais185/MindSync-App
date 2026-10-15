@@ -226,13 +226,13 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [
-                    const Color(0xFF6F39E8).withOpacity(0.1),
-                    const Color(0xFF0E9186).withOpacity(0.05),
+                    const Color(0xFF6F39E8).withValues(alpha: 0.1),
+                    const Color(0xFF0E9186).withValues(alpha: 0.05),
                   ],
                 ),
                 borderRadius: BorderRadius.circular(24),
                 border: Border.all(
-                  color: const Color(0xFF6F39E8).withOpacity(0.2),
+                  color: const Color(0xFF6F39E8).withValues(alpha: 0.2),
                 ),
               ),
               child: Column(
@@ -282,7 +282,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                 borderRadius: BorderRadius.circular(24),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.02),
+                    color: Colors.black.withValues(alpha: 0.02),
                     blurRadius: 8,
                     offset: const Offset(0, 2),
                   ),
@@ -341,7 +341,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
           borderRadius: BorderRadius.circular(30),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF6F39E8).withOpacity(0.3),
+              color: const Color(0xFF6F39E8).withValues(alpha: 0.3),
               blurRadius: 8,
               offset: const Offset(0, 2),
             ),
@@ -375,7 +375,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.05),
+        color: color.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
@@ -384,7 +384,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
+              color: color.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(icon, color: color, size: 22),
@@ -564,7 +564,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: const Color(0xFF6F39E8).withOpacity(0.1),
+              color: const Color(0xFF6F39E8).withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(22),
             ),
             child: Icon(icon, color: const Color(0xFF6F39E8), size: 24),
@@ -671,7 +671,7 @@ class _Contact extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -784,7 +784,7 @@ class _DoctorTile extends StatelessWidget {
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.02),
+              color: Colors.black.withValues(alpha: 0.02),
               blurRadius: 8,
               offset: const Offset(0, 2),
             ),

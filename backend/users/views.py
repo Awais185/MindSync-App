@@ -267,6 +267,13 @@ class TrackUsageAPIView(APIView):
             end_time=data['end_time'],
         )
 
+        try:
+            from tracking.services.screentime_rollup import sync_today_from_events
+
+            sync_today_from_events(request.user)
+        except Exception:
+            pass
+
         usage, _ = AppUsage.objects.get_or_create(
             user=request.user,
             app_name=app_display,
@@ -288,7 +295,9 @@ class DailyUsageAPIView(APIView):
         
         today = timezone.now().date()
         qs = ScreenUsageEvent.objects.filter(user=request.user, date=today)
-        total = qs.aggregate(t=Sum('usage_time'))['t'] or 0
+        from tracking.services.screentime_rollup import day_total_seconds
+
+        total = day_total_seconds(request.user, today)
         
         # Determine average screen time from the last 7 days (finalized)
         last_7_days = today - timedelta(days=7)
@@ -348,22 +357,17 @@ class WeeklyUsageAPIView(APIView):
         
         today = timezone.now().date()
         start = today - timedelta(days=today.weekday())
-        
-        st_past = ScreenTime.objects.filter(user=request.user, date__gte=start, date__lt=today, is_finalized=True)
-        day_map = {str(r.date): r.total_screen_time for r in st_past}
-        
-        today_qs = ScreenUsageEvent.objects.filter(user=request.user, date=today)
-        today_total = today_qs.aggregate(t=Sum('usage_time'))['t'] or 0
-        day_map[str(today)] = today_total
-        
-        total = sum(day_map.values())
+        from tracking.services.screentime_rollup import day_total_seconds
+
         labels = []
         data_hours = []
         days_elapsed = (today - start).days + 1
+        total = 0
         for i in range(days_elapsed):
             d = start + timedelta(days=i)
+            sec = day_total_seconds(request.user, d)
+            total += sec
             labels.append(d.strftime('%a'))
-            sec = day_map.get(str(d), 0)
             data_hours.append(round(sec / 3600, 2))
         while len(labels) < 7:
             labels.append('')
@@ -394,15 +398,16 @@ class MonthlyUsageAPIView(APIView):
         now = timezone.now()
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         today = now.date()
-        
-        st_past = ScreenTime.objects.filter(user=request.user, date__gte=start.date(), date__lt=today, is_finalized=True)
-        by_day = [{'date': r.date, 'day_total': r.total_screen_time} for r in st_past]
-        
-        today_qs = ScreenUsageEvent.objects.filter(user=request.user, date=today)
-        today_total = today_qs.aggregate(t=Sum('usage_time'))['t'] or 0
-        by_day.append({'date': today, 'day_total': today_total})
-        
-        total = sum(d['day_total'] for d in by_day)
+        from tracking.services.screentime_rollup import day_total_seconds
+
+        by_day = []
+        total = 0
+        d = start.date()
+        while d <= today:
+            sec = day_total_seconds(request.user, d)
+            by_day.append({'date': d.isoformat(), 'day_total': sec})
+            total += sec
+            d += timedelta(days=1)
         days_elapsed = (today - start.date()).days + 1
         avg_seconds = total / days_elapsed if days_elapsed > 0 else 0
         

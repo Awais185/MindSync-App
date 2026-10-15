@@ -1,4 +1,4 @@
-/// Canonical user record synced across Firebase Auth, Firestore, and SQLite.
+/// Canonical user record synced between Django API and local SQLite.
 class AppUser {
   const AppUser({
     required this.uid,

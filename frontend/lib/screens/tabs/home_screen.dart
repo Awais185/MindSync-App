@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -13,6 +12,7 @@ import '../../widgets/permission_banner.dart';
 import '../pages/profile_screen.dart';
 import '../../services/app_public_service.dart';
 import '../../services/local_auth_service.dart';
+import '../../services/feature_permission_service.dart';
 import '../../services/screen_time_service.dart';
 import '../../services/tracking_permissions_gate.dart';
 import '../../services/wellness_dashboard_service.dart';
@@ -20,21 +20,7 @@ import '../../services/weekly_mood_service.dart';
 import '../../widgets/mindsync_logo.dart';
 import '../../widgets/mental_health_insights_gate.dart';
 import '../pages/upgrade_plan_screen.dart';
-
-Uint8List? _decodeAppIconBase64(String? b64) {
-  if (b64 == null || b64.isEmpty) return null;
-  try {
-    return Uint8List.fromList(base64Decode(b64));
-  } catch (_) {
-    return null;
-  }
-}
-
-String _formatIsoShort(String iso) {
-  if (iso.length >= 16)
-    return 'Updated ${iso.substring(0, 16).replaceFirst('T', ' ')}';
-  return 'Updated recently';
-}
+import 'home/home_screen_helpers.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -123,7 +109,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                   description: 'MindSync needs usage access to track your screen time and app usage.',
                   icon: Icons.data_usage,
                   onAllow: () async {
-                    await ScreenTimeService.instance.openUsageSettings();
+                    await FeaturePermissionService.ensureUsageAccess(context);
                     await ScreenTimeService.instance.refreshNow();
                   },
                 );
@@ -170,7 +156,7 @@ class _TopOverviewCardState extends State<_TopOverviewCard> {
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -284,7 +270,7 @@ class _WellbeingScoreCardLive extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -582,7 +568,7 @@ class _ActionNeededCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -664,8 +650,7 @@ class _ActionNeededCard extends StatelessWidget {
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: () async {
-                    await ScreenTimeService.instance
-                        .ensureScreenCapturePermission();
+                    await FeaturePermissionService.ensureScreenCapture(context);
                     await ScreenTimeService.instance.refreshNow();
                   },
                   child: const Padding(
@@ -712,7 +697,7 @@ class _AppUsageCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -808,7 +793,7 @@ class _AppUsageCard extends StatelessWidget {
                     app.appName,
                     packageName: app.packageName,
                   );
-                  final bytes = _decodeAppIconBase64(app.iconPngBase64);
+                  final bytes = decodeAppIconBase64(app.iconPngBase64);
                   final isFg = fgPkg.isNotEmpty && app.packageName == fgPkg;
                   final displaySecs = (app.sortKeyMs / 1000).round();
                   return Padding(
@@ -975,7 +960,7 @@ class _VulnerabilityCardDynamic extends StatelessWidget {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -1043,7 +1028,7 @@ class _VulnerabilityCardDynamic extends StatelessWidget {
                   if (updated != null && updated.isNotEmpty) ...[
                     const Spacer(),
                     Text(
-                      _formatIsoShort(updated),
+                      formatIsoShort(updated),
                       style: const TextStyle(
                         fontSize: 10,
                         color: Color(0xFF9A9BA6),
@@ -1292,9 +1277,9 @@ class _WeeklyMoodCardDynamic extends StatelessWidget {
         return Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
-            color: _moodColor(item.mood).withOpacity(0.12),
+            color: _moodColor(item.mood).withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: _moodColor(item.mood).withOpacity(0.35)),
+            border: Border.all(color: _moodColor(item.mood).withValues(alpha: 0.35)),
           ),
           child: Text(
             '${item.label} ${item.percent.toStringAsFixed(0)}%',
@@ -1319,7 +1304,7 @@ class _WeeklyMoodCardDynamic extends StatelessWidget {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -1400,10 +1385,10 @@ class _WeeklyMoodCardDynamic extends StatelessWidget {
                   vertical: 10,
                 ),
                 decoration: BoxDecoration(
-                  color: _moodColor(overall.category).withOpacity(0.1),
+                  color: _moodColor(overall.category).withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(
-                    color: _moodColor(overall.category).withOpacity(0.35),
+                    color: _moodColor(overall.category).withValues(alpha: 0.35),
                   ),
                 ),
                 child: Row(
@@ -1598,7 +1583,7 @@ class _MoodGraphPainterLive extends CustomPainter {
         text: TextSpan(
           text: text,
           style: TextStyle(
-            color: color.withOpacity(0.7),
+            color: color.withValues(alpha: 0.7),
             fontSize: 8,
             fontWeight: FontWeight.w600,
           ),

@@ -604,39 +604,37 @@ class ScreenTimeService {
     }
   }
 
-  Future<bool> ensureScreenCapturePermission() async {
-    if (kIsWeb) return false;
+  /// Launches the system MediaProjection consent (dedicated activity, not App info).
+  Future<void> launchScreenCaptureConsent() async {
+    if (kIsWeb) return;
     try {
-      final allowed = await _channel.invokeMethod<bool>(
-        'requestScreenCapturePermission',
-      );
-      await _refresh();
-      final ok = allowed ?? false;
-      if (ok) {
-        await _notifyNativeScreenCaptureGranted();
-      }
-      return ok;
+      await _channel.invokeMethod<bool>('launchScreenCaptureConsentActivity');
     } on MissingPluginException {
-      return false;
-    } catch (_) {
-      return false;
-    }
+      return;
+    } catch (_) {}
   }
 
-  /// Shows the Android system screen-recording consent dialog (MediaProjection).
+  Future<bool> ensureScreenCapturePermission() async {
+    if (kIsWeb) return false;
+    if (await hasScreenCapturePermission()) return true;
+    await launchScreenCaptureConsent();
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    await _refresh();
+    final ok = await hasScreenCapturePermission();
+    if (ok) {
+      await _notifyNativeScreenCaptureGranted();
+    }
+    return ok;
+  }
+
+  /// System screen-capture consent (MediaProjection), not application details.
   Future<bool> openScreenCaptureSettings() async {
     if (kIsWeb) return false;
-    try {
-      final allowed = await _channel.invokeMethod<bool>(
-        'openScreenCaptureSettings',
-      );
-      await _refresh();
-      return allowed ?? false;
-    } on MissingPluginException {
-      return false;
-    } catch (_) {
-      return false;
-    }
+    if (await hasScreenCapturePermission()) return true;
+    await launchScreenCaptureConsent();
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    await _refresh();
+    return await hasScreenCapturePermission();
   }
 
   /// App info only — does not grant screen recording.
@@ -661,7 +659,7 @@ class ScreenTimeService {
   void setFaceVerified(bool verified) {
     faceVerified.value = verified;
     if (verified && faceMatchPercent.value <= 0) {
-      faceMatchPercent.value = 50;
+      faceMatchPercent.value = 80;
     }
     _syncTrackerContext();
     _refresh();
@@ -766,17 +764,18 @@ class ScreenTimeService {
       }
     }
 
-    // Prefer real-time native foreground tracker when Usage Access is granted.
+    // Logged-in totals come from Django (events + finalized days). Native per-app
+    // bars/icons only; do not let device-wide UsageStats override JWT-scoped totals.
     final nativeHasLive = trusted && n.nativeTrackerConfigured;
-    final daySeconds = nativeHasLive
-        ? n.daySeconds
-        : ((useBackendTotals && b.daySeconds > 0) ? b.daySeconds : n.daySeconds);
-    final weekSeconds = nativeHasLive
-        ? n.weekSeconds
-        : (useBackendTotals ? b.weekSeconds : n.weekSeconds);
-    final monthSeconds = nativeHasLive
-        ? n.monthSeconds
-        : (useBackendTotals ? b.monthSeconds : n.monthSeconds);
+    final daySeconds = useBackendTotals && b.daySeconds > 0
+        ? b.daySeconds
+        : (nativeHasLive ? n.daySeconds : n.daySeconds);
+    final weekSeconds = useBackendTotals && b.weekSeconds > 0
+        ? b.weekSeconds
+        : (nativeHasLive ? n.weekSeconds : n.weekSeconds);
+    final monthSeconds = useBackendTotals && b.monthSeconds > 0
+        ? b.monthSeconds
+        : (nativeHasLive ? n.monthSeconds : n.monthSeconds);
 
     final fgToday = trusted
         ? n.foregroundAppTodaySeconds

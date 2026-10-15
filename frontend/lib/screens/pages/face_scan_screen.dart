@@ -8,13 +8,16 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
+
+import '../../services/feature_permission_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../services/behavior_analysis_warmup.dart';
 import '../../services/plan_access_service.dart';
-import '../../services/screen_time_service.dart';
 import '../../config/api_config.dart';
 import '../../utils/mental_health_severity.dart';
+import '../../widgets/deep_face_analysis_hero.dart';
 import '../../widgets/permission_banner.dart';
 import 'face_scan_record_screen.dart';
 
@@ -50,6 +53,14 @@ Map<String, dynamic> _jsonStringKeyedMap(dynamic value) {
   return const {};
 }
 
+String _trackedBadgeForAnalysisSource(String source) {
+  final s = source.toLowerCase();
+  if (s.contains('mediapipe')) return 'FACE MESH TRACKED';
+  if (s.contains('openface')) return 'OPENFACE TRACKED';
+  if (s.contains('au_video')) return 'AU TRACKED';
+  return 'TRACKED VIDEO';
+}
+
 class FaceScanScreen extends StatefulWidget {
   const FaceScanScreen({super.key, this.autoOpenCamera = false});
 
@@ -77,13 +88,12 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   String _stage = 'Preparing...';
   double _progress = 0.0;
   Timer? _progressTimer;
-  AnalysisMode _analysisMode =
-      kIsWeb ? AnalysisMode.fast : AnalysisMode.accurate;
   bool _featureAllowed = true;
 
   @override
   void initState() {
     super.initState();
+    unawaited(warmupBehaviorAnalysisModels());
     _ensureAccess();
     if (widget.autoOpenCamera) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -241,58 +251,38 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     _startProgressAnimation();
 
     try {
-      final selectedFast = _analysisMode == AnalysisMode.fast;
-
-      Future<Map<String, dynamic>> runAnalyze({
-        required bool fastMode,
-      }) async {
-        final request = http.MultipartRequest(
-          'POST',
-          Uri.parse('${ApiConfig.baseUrl}/api/face/behavior/analyze/'),
-        );
-        request.headers['Authorization'] = 'Bearer $token';
-        request.fields['source_type'] = 'random_usage';
-        request.fields['scan_type'] = scanType;
-        request.fields['fast_mode'] = fastMode ? 'true' : 'false';
-        request.fields['include_media'] = 'true';
-        request.fields['include_deepface_results'] = 'true';
-        request.files.add(
-          await _toMultipartFile(fieldName: 'video', file: video),
-        );
-
-        final streamed = await request.send().timeout(
-          Duration(minutes: fastMode ? 6 : 8),
-        );
-        final resp = await http.Response.fromStream(streamed);
-        final body = jsonDecode(resp.body) as Map<String, dynamic>;
-        if (resp.statusCode < 200 || resp.statusCode >= 300) {
-          final msg = (body['detail'] ?? body['error'] ?? 'Face analysis failed')
-              .toString();
-          final hint = (body['hint'] ?? '').toString().trim();
-          throw Exception(hint.isEmpty ? msg : '$msg $hint');
-        }
-        return body;
-      }
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('${ApiConfig.baseUrl}/api/face/behavior/analyze/'),
+      );
+      request.headers['Authorization'] = 'Bearer $token';
+      request.fields['source_type'] = 'random_usage';
+      request.fields['scan_type'] = scanType;
+      request.fields['fast_mode'] = 'true';
+      request.fields['include_media'] = 'true';
+      request.fields['include_deepface_results'] = 'false';
+      request.files.add(
+        await _toMultipartFile(fieldName: 'video', file: video),
+      );
 
       setState(
-        () => _stage = selectedFast
-            ? 'Running fast OpenFace analysis with tracked video...'
-            : 'Running high-accuracy analysis...',
+        () => _stage =
+            'Running face-mesh AU analysis with tracked video…',
       );
-      var body = await runAnalyze(fastMode: selectedFast);
-      var analyzedVideoUrlRaw = (body['analyzed_video_url'] ?? '').toString();
 
-      // If tracked output is missing, auto-retry once in high-accuracy mode (camera + upload).
-      final trackedIncluded = body['tracked_video_included'] == true;
-      if ((analyzedVideoUrlRaw.isEmpty || !trackedIncluded) && selectedFast) {
-        if (mounted) {
-          setState(() {
-            _stage = 'Tracked video missing, retrying in high-accuracy mode...';
-          });
-        }
-        body = await runAnalyze(fastMode: false);
-        analyzedVideoUrlRaw = (body['analyzed_video_url'] ?? '').toString();
+      final streamed = await request.send().timeout(
+        const Duration(seconds: 90),
+      );
+      final resp = await http.Response.fromStream(streamed);
+      final body = jsonDecode(resp.body) as Map<String, dynamic>;
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        final msg = (body['detail'] ?? body['error'] ?? 'Face analysis failed')
+            .toString();
+        final hint = (body['hint'] ?? '').toString().trim();
+        throw Exception(hint.isEmpty ? msg : '$msg $hint');
       }
+
+      final analyzedVideoUrlRaw = (body['analyzed_video_url'] ?? '').toString();
 
       await _videoController?.dispose();
       final controller = await _initAnalyzedVideoController(
@@ -316,12 +306,23 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
           'Analysis completed, but this browser cannot play the processed codec.',
         );
       }
+      final trackedIncluded = body['tracked_video_included'] == true;
       final processingMs = int.tryParse('${body['processing_time_ms'] ?? 0}') ?? 0;
-      _show(
-        processingMs > 0
-            ? 'Deep face analysis complete in ${(processingMs / 1000).toStringAsFixed(1)}s.'
-            : 'Deep face analysis complete.',
-      );
+      if (trackedIncluded && controller != null) {
+        unawaited(controller.play());
+      }
+      if (!trackedIncluded && analyzedVideoUrlRaw.isEmpty) {
+        _show(
+          'Scores are ready, but the landmark overlay video was not created. '
+          'Restart the backend and try a shorter clip (under 20s).',
+        );
+      } else {
+        _show(
+          processingMs > 0
+              ? 'Deep face analysis complete in ${(processingMs / 1000).toStringAsFixed(1)}s.'
+              : 'Deep face analysis complete.',
+        );
+      }
     } on TimeoutException {
       _show('Analysis timeout. Please try again.');
     } catch (e) {
@@ -335,16 +336,16 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   }
 
   Future<bool> _ensureMoodCameraPermission({bool includeMic = false}) async {
-    // Web: browser prompts for camera/mic; permission_handler is not used on web.
     if (kIsWeb) return true;
-    final cam = await Permission.camera.request();
-    if (!cam.isGranted) {
+    if (!mounted) return false;
+    final camOk = await FeaturePermissionService.ensureCamera(context);
+    if (!camOk) {
       _show('Camera permission is required for mood capture.');
       return false;
     }
     if (includeMic) {
-      final mic = await Permission.microphone.request();
-      if (!mic.isGranted) {
+      final micOk = await FeaturePermissionService.ensureMicrophone(context);
+      if (!micOk) {
         _show('Microphone permission is required for mood video.');
         return false;
       }
@@ -445,6 +446,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       );
       final response = await http.Response.fromStream(streamed);
       if (response.statusCode < 200 || response.statusCode >= 300) {
+        await _scheduleMoodRetryAfterFail();
         _show('Image mood detection failed.');
         return;
       }
@@ -452,6 +454,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       final mood = data['mood'] as Map<String, dynamic>?;
       if (mood == null || mood.isEmpty) {
         final hint = (data['message'] ?? data['detail'])?.toString();
+        await _scheduleMoodRetryAfterFail();
         _show(
           hint?.isNotEmpty == true
               ? hint!
@@ -464,6 +467,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         _imageMoodResult = mood;
         _progress = 1.0;
       });
+      await _applyMoodCapturePause();
       final msg = (data['message'] ?? mood['prediction'])?.toString();
       _show(
         msg?.isNotEmpty == true ? msg! : 'Image mood prediction complete.',
@@ -502,6 +506,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       );
       final response = await http.Response.fromStream(streamed);
       if (response.statusCode < 200 || response.statusCode >= 300) {
+        await _scheduleMoodRetryAfterFail();
         _show('Video mood detection failed.');
         return;
       }
@@ -509,6 +514,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       final mood = data['mood'] as Map<String, dynamic>?;
       if (mood == null || mood.isEmpty) {
         final hint = (data['message'] ?? data['detail'])?.toString();
+        await _scheduleMoodRetryAfterFail();
         _show(
           hint?.isNotEmpty == true
               ? hint!
@@ -521,6 +527,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         _videoMoodResult = mood;
         _progress = 1.0;
       });
+      await _applyMoodCapturePause();
       final msg = (data['message'] ?? mood['prediction'])?.toString();
       _show(
         msg?.isNotEmpty == true ? msg! : 'Video mood prediction complete.',
@@ -563,6 +570,9 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     final dominant = (result?['dominant_state'] ?? 'unknown').toString();
     final severity =
         int.tryParse('${result?['overall_severity_score'] ?? 0}') ?? 0;
+    final analysisSource =
+        (result?['analysis_source'] ?? 'openface').toString();
+    final trackedBadge = _trackedBadgeForAnalysisSource(analysisSource);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF3F4FA),
@@ -573,67 +583,91 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 30),
         children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF6F39E8), Color(0xFF4B2AAD)],
-              ),
-              borderRadius: BorderRadius.circular(18),
-              boxShadow: [
-                BoxShadow(
-                  color: Color(0xFF6F39E8).withValues(alpha: 0.25),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
+          const DeepFaceAnalysisIntroCard(),
+          const SizedBox(height: 14),
+          const DeepFaceMeshSampleImage(),
+          const SizedBox(height: 14),
+          DeepFaceScanActions(
+            maxVideoSeconds: _maxVideoDurationSeconds,
+            loading: _loading,
+            onRecord: _pickRecordedVideo,
+            onUpload: _pickUploadedVideo,
+          ),
+          if (result != null) ...[
+            const SizedBox(height: 14),
+            if (_videoController != null &&
+                _videoController!.value.isInitialized)
+              _TrackedAnalysisVideoCard(
+                controller: _videoController!,
+                badgeLabel: trackedBadge,
+              )
+            else
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF7E8),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFFFE2A9)),
                 ),
-              ],
-            ),
-            child: const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Deep Face Analysis',
+                child: const Text(
+                  'Tracked video is not available for this result. Record again with your face centered and good lighting.',
                   style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    color: Colors.white,
+                    color: Color(0xFF7A5B00),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                SizedBox(height: 6),
-                Text(
-                  'OpenFace tracked video + stress, anxiety, depression insights',
-                  style: TextStyle(fontSize: 12, color: Color(0xFFE8DDFF)),
-                ),
-              ],
+              ),
+            const SizedBox(height: 14),
+            _AnalysisSessionCard(
+              dominant: dominant,
+              severity: severity,
+              stress: stress,
+              anxiety: anxiety,
+              depression: depression,
+              behavioralInsights: _jsonStringList(result['behavioral_insights']),
+              recommendations: _jsonStringList(result['recommendations']),
+              aus: _jsonMapList(result['au_summary']),
+              activeAus: _jsonStringList(result['active_aus']),
+              matchedAusByState: _jsonStringKeyedMap(
+                result['matched_aus_by_state'],
+              ),
+              stateProbabilities: _jsonStringKeyedMap(
+                result['state_probabilities'],
+              ),
+              deepfaceDominant:
+                  (result['deepface_dominant_emotion'] ?? '').toString(),
+              deepfaceFrames:
+                  int.tryParse('${result['deepface_frames_analyzed'] ?? 0}') ??
+                      0,
+              deepfaceSummary: _jsonStringKeyedMap(
+                result['deepface_emotion_summary'],
+              ),
+              webStylePrediction:
+                  (result['web_style_prediction'] ?? '').toString(),
+              webStyleConfidence: double.tryParse(
+                    '${result['web_style_confidence'] ?? ''}',
+                  ) ??
+                  0.0,
+              analysisSource: analysisSource,
+              topStates: _jsonStringList(
+                result['score_breakdown']?['dominant_states'] ??
+                    result['dominant_states'],
+              ).map((e) => e.toUpperCase()).toList(),
             ),
-          ),
-          const SizedBox(height: 10),
-          _ScanOptionTile(
-            title: 'Record From Camera',
-            subtitle: 'Record face video with timer (max ${_maxVideoDurationSeconds}s)',
-            icon: Icons.videocam_rounded,
-            onTap: _loading ? null : _pickRecordedVideo,
-          ),
-          const SizedBox(height: 10),
-          _ScanOptionTile(
-            title: 'Upload',
-            subtitle: 'Choose a video from gallery or storage',
-            icon: Icons.upload_file_rounded,
-            onTap: _loading ? null : _pickUploadedVideo,
-          ),
+            const SizedBox(height: 18),
+          ],
           const SizedBox(height: 10),
           FutureBuilder<Map<String, bool>>(
             future: Future.wait([
               Permission.camera.isGranted,
               Permission.microphone.isGranted,
-              ScreenTimeService.instance.hasScreenCapturePermission(),
             ]).then((list) => {
                   'cam': list[0],
                   'mic': list[1],
-                  'screen': list[2],
                 }),
             builder: (context, snap) {
-              final perms = snap.data ?? {'cam': true, 'mic': true, 'screen': true};
+              final perms = snap.data ?? {'cam': true, 'mic': true};
               final missing = <Widget>[];
 
               if (perms['cam'] == false) {
@@ -642,7 +676,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                   description: 'Camera is needed to record a face scan.',
                   icon: Icons.camera_alt,
                   onAllow: () async {
-                    await Permission.camera.request();
+                    await FeaturePermissionService.ensureCamera(context);
                     setState(() {});
                   },
                 ));
@@ -653,23 +687,11 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                   description: 'Microphone is needed for video mood recording.',
                   icon: Icons.mic,
                   onAllow: () async {
-                    await Permission.microphone.request();
+                    await FeaturePermissionService.ensureMicrophone(context);
                     setState(() {});
                   },
                 ));
               }
-              if (perms['screen'] == false) {
-                missing.add(PermissionBanner(
-                  title: 'Screen Capture Required',
-                  description: 'Screen capture enables background emotion tracking.',
-                  icon: Icons.screen_share,
-                  onAllow: () async {
-                    await ScreenTimeService.instance.ensureScreenCapturePermission();
-                    setState(() {});
-                  },
-                ));
-              }
-
               if (missing.isEmpty) return const SizedBox.shrink();
               return Column(
                 children: missing.map((e) => Padding(
@@ -678,10 +700,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                 )).toList(),
               );
             },
-          ),
-          _AnalysisModeToggle(
-            mode: _analysisMode,
-            onChanged: _loading ? null : (mode) => setState(() => _analysisMode = mode),
           ),
           if (_loading) ...[
             const SizedBox(height: 18),
@@ -708,158 +726,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                   ),
                 ],
               ),
-            ),
-          ],
-          if (_videoController != null &&
-              _videoController!.value.isInitialized) ...[
-            const SizedBox(height: 18),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFFE8EAF3)),
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE9FBF6),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: const Text(
-                          'OPENFACE TRACKED',
-                          style: TextStyle(
-                            color: Color(0xFF0D8E73),
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                      const Spacer(),
-                      const Text(
-                        'Landmarks + AU',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: Color(0xFF7B7F90),
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: AspectRatio(
-                      aspectRatio: _videoController!.value.aspectRatio,
-                      child: VideoPlayer(_videoController!),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  VideoProgressIndicator(
-                    _videoController!,
-                    allowScrubbing: true,
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                  ),
-                  Row(
-                    children: [
-                      IconButton(
-                        onPressed: () async {
-                          await _videoController!.seekTo(Duration.zero);
-                          await _videoController!.play();
-                          setState(() {});
-                        },
-                        icon: const Icon(Icons.replay_rounded),
-                      ),
-                      IconButton(
-                        onPressed: () async {
-                          if (_videoController!.value.isPlaying) {
-                            await _videoController!.pause();
-                          } else {
-                            await _videoController!.play();
-                          }
-                          setState(() {});
-                        },
-                        icon: Icon(
-                          _videoController!.value.isPlaying
-                              ? Icons.pause_circle_filled_rounded
-                              : Icons.play_circle_fill_rounded,
-                        ),
-                      ),
-                      const Spacer(),
-                      Text(
-                        '${_videoController!.value.position.inSeconds}s / ${_videoController!.value.duration.inSeconds}s',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF6E7381),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ] else if (result != null) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFF7E8),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFFFE2A9)),
-              ),
-              child: const Text(
-                'Analyzed tracked video is not available for this result. Try High Accuracy mode for richer output.',
-                style: TextStyle(
-                  color: Color(0xFF7A5B00),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-          if (result != null) ...[
-            const SizedBox(height: 18),
-            _AnalysisSessionCard(
-              dominant: dominant,
-              severity: severity,
-              stress: stress,
-              anxiety: anxiety,
-              depression: depression,
-              behavioralInsights: _jsonStringList(result['behavioral_insights']),
-              recommendations: _jsonStringList(result['recommendations']),
-              aus: _jsonMapList(result['au_summary']),
-              activeAus: _jsonStringList(result['active_aus']),
-              matchedAusByState: _jsonStringKeyedMap(
-                result['matched_aus_by_state'],
-              ),
-              stateProbabilities: _jsonStringKeyedMap(
-                result['state_probabilities'],
-              ),
-              deepfaceDominant:
-                  (result['deepface_dominant_emotion'] ?? '').toString(),
-              deepfaceFrames:
-                  int.tryParse('${result['deepface_frames_analyzed'] ?? 0}') ?? 0,
-              deepfaceSummary: _jsonStringKeyedMap(
-                result['deepface_emotion_summary'],
-              ),
-              webStylePrediction:
-                  (result['web_style_prediction'] ?? '').toString(),
-              webStyleConfidence: double.tryParse(
-                    '${result['web_style_confidence'] ?? ''}',
-                  ) ??
-                  0.0,
-              analysisSource: (result['analysis_source'] ?? 'openface').toString(),
-              topStates: _jsonStringList(
-                result['score_breakdown']?['dominant_states'] ??
-                    result['dominant_states'],
-              ).map((e) => e.toUpperCase()).toList(),
             ),
           ],
           const SizedBox(height: 22),
@@ -966,104 +832,107 @@ class _ScanOptionTile extends StatelessWidget {
   }
 }
 
-enum AnalysisMode { fast, accurate }
+class _TrackedAnalysisVideoCard extends StatelessWidget {
+  const _TrackedAnalysisVideoCard({
+    required this.controller,
+    required this.badgeLabel,
+  });
 
-class _AnalysisModeToggle extends StatelessWidget {
-  const _AnalysisModeToggle({required this.mode, required this.onChanged});
-
-  final AnalysisMode mode;
-  final ValueChanged<AnalysisMode>? onChanged;
+  final VideoPlayerController controller;
+  final String badgeLabel;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE4E6EE)),
+        border: Border.all(color: const Color(0xFFE8EAF3)),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Analysis Mode',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
-          ),
-          const SizedBox(height: 8),
           Row(
             children: [
-              Expanded(
-                child: _ModeChip(
-                  label: 'Fast',
-                  selected: mode == AnalysisMode.fast,
-                  subtitle: 'Low response time',
-                  onTap: onChanged == null ? null : () => onChanged!(AnalysisMode.fast),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE9FBF6),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  badgeLabel,
+                  style: const TextStyle(
+                    color: Color(0xFF0D8E73),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _ModeChip(
-                  label: 'High Accuracy',
-                  selected: mode == AnalysisMode.accurate,
-                  subtitle: 'More detailed results',
-                  onTap: onChanged == null ? null : () => onChanged!(AnalysisMode.accurate),
+              const Spacer(),
+              const Text(
+                'Top banner: scores + active AUs',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFF7B7F90),
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: AspectRatio(
+              aspectRatio: controller.value.aspectRatio,
+              child: VideoPlayer(controller),
+            ),
+          ),
+          const SizedBox(height: 8),
+          VideoProgressIndicator(
+            controller,
+            allowScrubbing: true,
+            padding: const EdgeInsets.symmetric(vertical: 6),
+          ),
+          ListenableBuilder(
+            listenable: controller,
+            builder: (context, _) {
+              return Row(
+                children: [
+                  IconButton(
+                    onPressed: () async {
+                      await controller.seekTo(Duration.zero);
+                      await controller.play();
+                    },
+                    icon: const Icon(Icons.replay_rounded),
+                  ),
+                  IconButton(
+                    onPressed: () async {
+                      if (controller.value.isPlaying) {
+                        await controller.pause();
+                      } else {
+                        await controller.play();
+                      }
+                    },
+                    icon: Icon(
+                      controller.value.isPlaying
+                          ? Icons.pause_circle_filled_rounded
+                          : Icons.play_circle_fill_rounded,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${controller.value.position.inSeconds}s / ${controller.value.duration.inSeconds}s',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF6E7381),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
         ],
-      ),
-    );
-  }
-}
-
-class _ModeChip extends StatelessWidget {
-  const _ModeChip({
-    required this.label,
-    required this.subtitle,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final String subtitle;
-  final bool selected;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-        decoration: BoxDecoration(
-          color: selected ? const Color(0xFF6F39E8) : const Color(0xFFF6F4FF),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: TextStyle(
-                color: selected ? Colors.white : const Color(0xFF3A3B46),
-                fontWeight: FontWeight.w700,
-                fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              subtitle,
-              style: TextStyle(
-                color: selected ? const Color(0xFFDACEFF) : const Color(0xFF7A7C8A),
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -1127,7 +996,25 @@ class _AnalysisSessionCard extends StatelessWidget {
             'Analysis Session Summary',
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
           ),
-          if (analysisSource == 'emotion_model_fallback') ...[
+          if (analysisSource.contains('mediapipe')) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE9FBF6),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFF9DE5D5)),
+              ),
+              child: const Text(
+                'MediaPipe face mesh landmarks drive AU geometry; emotion model fills AUs mesh cannot see. Stress, anxiety, and depression use the same STATE_AUS pipeline as OpenFace.',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF0D5C4A),
+                ),
+              ),
+            ),
+          ] else if (analysisSource == 'emotion_model_fallback') ...[
             const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.all(10),
@@ -1140,7 +1027,7 @@ class _AnalysisSessionCard extends StatelessWidget {
                 webStylePrediction.isNotEmpty
                     ? 'Web-style mood: $webStylePrediction '
                         '(${webStyleConfidence <= 1 ? (webStyleConfidence * 100).round() : webStyleConfidence.round()}% confidence)'
-                    : 'Scores from the same emotion model as web (OpenFace had no face landmarks in this clip).',
+                    : 'Scores from face mesh AU geometry and emotion model fusion.',
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -1176,7 +1063,7 @@ class _AnalysisSessionCard extends StatelessWidget {
           const SizedBox(height: 10),
           _AusCard(aus: aus),
           const SizedBox(height: 10),
-          _BulletCard(title: 'Active AUs (Actual OpenFace Detection)', items: activeAus),
+          _BulletCard(title: 'Active AUs (mesh + model)', items: activeAus),
           const SizedBox(height: 10),
           _AuDiseaseRelationCard(map: matchedAusByState),
           const SizedBox(height: 10),

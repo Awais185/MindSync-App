@@ -117,6 +117,23 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    private fun launchScreenCaptureConsentActivity(result: MethodChannel.Result) {
+        ScreenCapturePermissionStore.syncFromDisk(applicationContext)
+        if (ScreenCapturePermissionStore.hasPermission(applicationContext)) {
+            result.success(true)
+            return
+        }
+        try {
+            ScreenCaptureRestoreActivity.requestExplicitly(
+                applicationContext,
+                requireLoggedInSession = false,
+            )
+            result.success(false)
+        } catch (e: Exception) {
+            result.error("capture_failed", e.message ?: "launch_failed", null)
+        }
+    }
+
     private fun launchScreenCaptureConsent() {
         val pending = pendingScreenCaptureResult ?: return
         try {
@@ -168,26 +185,49 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(true)
                     }
                     "openScreenCaptureSettings" -> {
-                        requestScreenCaptureFromChannel(result)
+                        launchScreenCaptureConsentActivity(result)
+                    }
+                    "launchScreenCaptureConsentActivity" -> {
+                        launchScreenCaptureConsentActivity(result)
                     }
                     "openAppInfoSettings" -> {
                         ScreenCaptureSettingsHelper.openMindSyncAppInfo(applicationContext)
                         result.success(true)
                     }
                     "requestScreenCapturePermission" -> {
-                        requestScreenCaptureFromChannel(result)
+                        launchScreenCaptureConsentActivity(result)
+                    }
+                    "updateTrackerBaseUrl" -> {
+                        val args = call.arguments as? Map<*, *>
+                        val base = (args?.get("baseUrl") as? String).orEmpty()
+                        if (base.isNotBlank()) {
+                            TrackerPrefs.updateBaseUrl(applicationContext, base)
+                        }
+                        result.success(true)
                     }
                     "configureTracker" -> {
                         val args = call.arguments as? Map<*, *>
                         if (args != null) {
                             val token = (args["token"] as? String).orEmpty()
                             if (token.isBlank()) {
-                                // Keep MediaProjection consent across sessions — only stop enforcement.
                                 TrackerPrefs.setParentalEnforcementEnabled(applicationContext, false)
                                 AppBlockerService.stop(applicationContext)
-                            } else {
-                                ScreenCapturePermissionStore.syncFromDisk(applicationContext)
+                                val baseOnly = (args["baseUrl"] as? String).orEmpty()
+                                TrackerPrefs.writeConfig(
+                                    context = applicationContext,
+                                    baseUrl = baseOnly,
+                                    token = "",
+                                    userId = "",
+                                    faceVerified = false,
+                                    faceMatchPercent = 0.0,
+                                    screenCaptureOnboardingDone =
+                                        (args["screenCaptureOnboardingDone"] as? Boolean) ?: false,
+                                )
+                                BackgroundUsageService.stop(applicationContext)
+                                result.success(true)
+                                return@setMethodCallHandler
                             }
+                            ScreenCapturePermissionStore.syncFromDisk(applicationContext)
                             TrackerPrefs.writeConfig(
                                 context = applicationContext,
                                 baseUrl = (args["baseUrl"] as? String).orEmpty(),

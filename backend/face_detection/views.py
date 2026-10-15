@@ -15,7 +15,8 @@ from chat.video_model import analyze_video_file_path as chat_analyze_video_file_
 
 from .emotion_models import predict_image_pil, predict_video_path
 from .emotion_score_fallback import merge_emotion_fallback, openface_results_weak
-from .face_verification_service import DEFAULT_THRESHOLD, ensure_profile_embedding, verify_face_pair
+from .face_verification_service import DEFAULT_THRESHOLD
+from .profile_face_verify import verify_probe_for_user
 from .models import FaceSnapshot, MentalHealthResult
 from subscriptions.constants import PLAN_FREE
 from subscriptions.services import SubscriptionService
@@ -115,17 +116,28 @@ class FaceVerifyAndTrackView(views.APIView):
                 defaults={"profession": "other", "face_enrolled": False},
             )
             if not profile.face_image:
-                return response.Response({"error": "Face not enrolled"}, status=status.HTTP_400_BAD_REQUEST)
+                logger.warning(
+                    "verify-track: user_id=%s username=%s — no face_image on profile "
+                    "(face_enrolled=%s). Re-enroll face in the app.",
+                    user.id,
+                    user.username,
+                    profile.face_enrolled,
+                )
+                return response.Response(
+                    {
+                        "matched": False,
+                        "match": False,
+                        "status": "not_enrolled",
+                        "error": "Face not enrolled",
+                        "detail": "Enroll your face in MindSync settings, then unlock again.",
+                    },
+                    status=status.HTTP_200_OK,
+                )
 
             uploaded = data["image"].read()
             unlock_capture = str(
                 data.get("source") or data.get("capture_context") or ""
             ).strip().lower() in {"unlock", "background", "unlock_verify"}
-
-            with profile.face_image.open("rb") as enrolled:
-                enrolled_bytes = enrolled.read()
-
-            enrolled_embedding = ensure_profile_embedding(profile)
 
             raw_thr = data.get("match_threshold") or os.environ.get(
                 "FACE_VERIFY_TRACK_THRESHOLD",
@@ -135,12 +147,10 @@ class FaceVerifyAndTrackView(views.APIView):
                 threshold = float(raw_thr)
             except (TypeError, ValueError):
                 threshold = DEFAULT_THRESHOLD
-            threshold = max(0.50, min(0.98, threshold))
 
-            result = verify_face_pair(
-                probe_bytes=uploaded,
-                enrolled_bytes=enrolled_bytes,
-                enrolled_embedding=enrolled_embedding,
+            _, result = verify_probe_for_user(
+                user,
+                uploaded,
                 threshold=threshold,
                 unlock_capture=unlock_capture,
             )
@@ -364,7 +374,7 @@ class FaceBehaviorAnalyzeView(views.APIView):
             # Unified preprocessing for camera + gallery upload (same FFmpeg-first path).
             prepared_path, prepared_duration = prepare_unified_analysis_video(
                 tmp_path,
-                fast_mode=fast_mode,
+                fast_mode=True,
             )
             logger.info(
                 "behavior/analyze pipeline user=%s scan_type=%s fast_mode=%s "
@@ -378,60 +388,62 @@ class FaceBehaviorAnalyzeView(views.APIView):
                 _count_readable_frames(prepared_path),
             )
 
+            from .analysis_warmup import ensure_behavior_models_warm
+            from .openface_pipeline import is_openface_available
+            from .video_au_tracker import run_cross_platform_video_analysis
+
+            # Same AU → stress/anxiety/depression math as OpenFace CSV; tuned for <40s total.
+            pipeline_fast = True
+            warmup_status = ensure_behavior_models_warm()
+
+            openface_host = is_openface_available()
+            if openface_host:
+                analysis = run_openface_and_analyze(
+                    input_video_path=prepared_path,
+                    max_peak_frames=3,
+                    include_tracked_video=include_media,
+                    fast_mode=pipeline_fast,
+                    prepared_video_path=prepared_path,
+                )
+            else:
+                logger.info(
+                    "behavior/analyze: AU video tracker (user=%s) warmup=%s",
+                    request.user.id,
+                    warmup_status,
+                )
+                analysis = run_cross_platform_video_analysis(
+                    prepared_path,
+                    fast_mode=pipeline_fast,
+                    include_tracked_video=include_media,
+                    budget_mode=True,
+                )
+                if include_media and not analysis.tracked_video_bytes:
+                    logger.warning(
+                        "behavior/analyze: tracked video missing — retry without budget cap",
+                    )
+                    analysis = run_cross_platform_video_analysis(
+                        prepared_path,
+                        fast_mode=True,
+                        include_tracked_video=True,
+                        budget_mode=False,
+                    )
+            scores = dict(analysis.scores) if isinstance(analysis.scores, dict) else {}
+
             deepface_video = {"summary": {}, "dominant": None, "frame_count": 0}
-            if include_deepface:
+            chat_video: dict = {}
+            if include_deepface and openface_results_weak(scores):
                 try:
                     deepface_video = predict_video_path(
                         prepared_path,
-                        max_frames=12 if fast_mode else 20,
-                        sample_fps=1.0,
+                        max_frames=6,
+                        sample_fps=2.0,
                     )
                 except Exception as deepface_exc:
                     logger.warning(
-                        "behavior/analyze deepface failed scan_type=%s: %s",
-                        scan_type,
+                        "behavior/analyze deepface fallback failed: %s",
                         deepface_exc,
                     )
-                    deepface_video = {"summary": {}, "dominant": None, "frame_count": 0}
 
-            chat_video: dict = {}
-            try:
-                chat_video = chat_analyze_video_file_path(
-                    prepared_path,
-                    max_frames=60 if fast_mode else 90,
-                )
-            except Exception as chat_exc:
-                logger.warning(
-                    "behavior/analyze chat video failed scan_type=%s: %s",
-                    scan_type,
-                    chat_exc,
-                )
-                chat_video = {}
-
-            # OpenFace scan: no enrolled-face gate — process any captured/uploaded clip.
-            analysis = run_openface_and_analyze(
-                input_video_path=prepared_path,
-                max_peak_frames=3,
-                include_tracked_video=include_media,
-                fast_mode=fast_mode,
-                prepared_video_path=prepared_path,
-            )
-            if include_media and not analysis.tracked_video_bytes:
-                logger.warning(
-                    "behavior/analyze tracked video missing scan_type=%s fast_mode=%s — "
-                    "retrying OpenFace with gaze/pose",
-                    scan_type,
-                    fast_mode,
-                )
-                if fast_mode:
-                    analysis = run_openface_and_analyze(
-                        input_video_path=prepared_path,
-                        max_peak_frames=3,
-                        include_tracked_video=True,
-                        fast_mode=False,
-                        prepared_video_path=prepared_path,
-                    )
-            scores = dict(analysis.scores) if isinstance(analysis.scores, dict) else {}
             if openface_results_weak(scores):
                 scores = merge_emotion_fallback(
                     scores,
@@ -495,12 +507,13 @@ class FaceBehaviorAnalyzeView(views.APIView):
             # Extract top 2–3 peak frames as expiring snapshots
             created_snapshots = []
             expires_at = default_snapshot_expiry()
-            if include_media:
+            elapsed_before_snaps = time.perf_counter() - started_at
+            if include_media and elapsed_before_snaps < 32.0:
                 snapshot_paths = extract_snapshots(
                     input_video_path=prepared_path or tmp_path,
                     timestamps=analysis.peak_timestamps,
                     out_dir=tempfile.mkdtemp(prefix="mindsync-snapshots-"),
-                    max_images=3,
+                    max_images=2,
                 )
                 for p in snapshot_paths[:3]:
                     try:
@@ -561,6 +574,8 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     "analyzed_video_url": _absolute_media_url(request, result.analyzed_video),
                     "peak_snapshots": created_snapshots,
                     "fast_mode": fast_mode,
+                    "pipeline_budget_40s": True,
+                    "warmup_status": warmup_status,
                     "media_included": include_media,
                     "processing_time_ms": int((time.perf_counter() - started_at) * 1000),
                     "deepface_emotion_summary": deepface_video.get("summary") or {},
@@ -569,7 +584,8 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     "web_style_prediction": chat_video.get("prediction"),
                     "web_style_confidence": chat_video.get("confidence"),
                     "web_style_summary": chat_video.get("summary") or {},
-                    "analysis_source": scores.get("analysis_source") or "openface",
+                    "analysis_source": scores.get("analysis_source")
+                    or ("openface" if openface_host else "au_video_tracker"),
                     "pipeline": "unified_openface_v1",
                     "pipeline_preprocessing": {
                         "prefer_reencode": True,
@@ -620,6 +636,28 @@ def _absolute_media_url(request, file_field) -> str:
     if rel.startswith("http://") or rel.startswith("https://"):
         return rel
     return request.build_absolute_uri(rel)
+
+
+class FaceBehaviorWarmupView(views.APIView):
+    """POST/GET — preload emotion + face mesh (or OpenFace on Windows) while user records."""
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request, *args, **kwargs):
+        return self._warm()
+
+    def post(self, request, *args, **kwargs):
+        return self._warm()
+
+    def _warm(self):
+        from .analysis_warmup import ensure_behavior_models_warm
+
+        status_payload = ensure_behavior_models_warm()
+        return response.Response(
+            {"ready": bool(status_payload.get("mediapipe_or_openface")),
+             "models": status_payload},
+            status=status.HTTP_200_OK,
+        )
 
 
 class FaceBehaviorLatestView(views.APIView):

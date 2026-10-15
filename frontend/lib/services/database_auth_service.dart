@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../config/api_config.dart';
 
-/// Talks to Django REST API, which reads/writes `backend/db.sqlite3` (auth_user table).
+/// Talks to Django REST API (PostgreSQL `auth_user` and related tables).
 /// No Firebase — server SQL is the source of truth for accounts.
 class DatabaseAuthService {
   DatabaseAuthService._();

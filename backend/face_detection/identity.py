@@ -13,7 +13,7 @@ from users.models import UserProfile
 logger = logging.getLogger(__name__)
 
 BACKGROUND_FACE_MATCH_THRESHOLD = float(
-    os.environ.get("BACKGROUND_FACE_MATCH_THRESHOLD", "0.50")
+    os.environ.get("BACKGROUND_FACE_MATCH_THRESHOLD", "0.80")
 )
 
 
@@ -71,7 +71,7 @@ def face_match_score_from_video_path_multi(
 ) -> tuple[float, bool]:
     """
     Sample frames across the clip; return max similarity vs enrolled face.
-    matched when max score >= threshold (default 50% for background monitoring).
+    matched when max score >= threshold (default 80% for background monitoring).
     """
     match_thr = threshold if threshold is not None else BACKGROUND_FACE_MATCH_THRESHOLD
 

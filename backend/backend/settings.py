@@ -63,12 +63,20 @@ STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', '').strip()
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-9)5&zy+jen_!7k^&=^rxd$^q*sa7+#4hq(ftn3f%yr^8+=w=$q'
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-9)5&zy+jen_!7k^&=^rxd$^q*sa7+#4hq(ftn3f%yr^8+=w=$q',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'true').strip().lower() in (
+    '1',
+    'true',
+    'yes',
+)
 
-ALLOWED_HOSTS = ['*']
+_hosts = os.environ.get('DJANGO_ALLOWED_HOSTS', '*').strip()
+ALLOWED_HOSTS = [h.strip() for h in _hosts.split(',') if h.strip()] or ['*']
 
 # Local dev: bind all interfaces so phones on the same Wi‑Fi can reach Django:
 #   python manage.py runserver 0.0.0.0:8000
@@ -77,6 +85,7 @@ ALLOWED_HOSTS = ['*']
 # Application definition
 
 INSTALLED_APPS = [
+    'jazzmin',  # Add this line at the top
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -109,15 +118,23 @@ MIDDLEWARE = [
 # CORS: DEBUG allows any origin (Flutter web uses random localhost ports; LAN devices vary).
 # In production set DEBUG=False and list web app origins in CORS_ALLOWED_ORIGINS (comma-separated).
 # Example: CORS_ALLOWED_ORIGINS=https://app.mindsync.com,https://www.mindsync.com
+_DEFAULT_CORS_ORIGINS = (
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'https://mindsyncai.vercel.app',
+)
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
 else:
     CORS_ALLOW_ALL_ORIGINS = False
-    CORS_ALLOWED_ORIGINS = [
+    _cors_from_env = [
         o.strip()
         for o in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',')
         if o.strip()
     ]
+    CORS_ALLOWED_ORIGINS = list(
+        dict.fromkeys(_cors_from_env + list(_DEFAULT_CORS_ORIGINS)),
+    )
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
@@ -151,19 +168,37 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend.wsgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+# Database — PostgreSQL (see backend/docker-compose.yml and SETUP.md)
+# Optional escape hatch for tests only: USE_SQLITE=true
+_use_sqlite = os.environ.get('USE_SQLITE', '').strip().lower() in (
+    '1',
+    'true',
+    'yes',
+)
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        'OPTIONS': {
-            # Wait up to 30s when another writer holds the SQLite lock.
-            'timeout': 30,
-        },
+if _use_sqlite:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+            'OPTIONS': {'timeout': 30},
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('POSTGRES_DB', 'mindsync').strip() or 'mindsync',
+            'USER': os.environ.get('POSTGRES_USER', 'mindsync').strip() or 'mindsync',
+            'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'mindsync').strip() or 'mindsync',
+            'HOST': os.environ.get('POSTGRES_HOST', '127.0.0.1').strip() or '127.0.0.1',
+            'PORT': os.environ.get('POSTGRES_PORT', '5432').strip() or '5432',
+            # Default 0: close after each request (avoids exhausting local Postgres max_connections).
+            'CONN_MAX_AGE': int(os.environ.get('POSTGRES_CONN_MAX_AGE', '0')),
+            'CONN_HEALTH_CHECKS': True,
+            'OPTIONS': {},
+        }
+    }
 
 
 # Password validation
@@ -247,9 +282,3 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
 }
-
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    'https://mindsyncai.vercel.app',
-]
