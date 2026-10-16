@@ -29,8 +29,8 @@ def ensure_past_days_finalized(user):
 
 def finalize_daily_usage(user, target_date):
     """
-    Computes total active time, sleep time (screen OFF between 10 PM - 5 AM), 
-    and late-night activity (screen ON between 10 PM - 5 AM) from ScreenUsageEvent.
+    Computes total active time, sleep time (screen OFF between 10 PM - 6 AM),
+    and late-night activity (screen ON between 10 PM - 6 AM) from ScreenUsageEvent.
     Marks the day as finalized in ScreenTime.
     """
     tz = timezone.get_current_timezone()
@@ -60,9 +60,9 @@ def finalize_daily_usage(user, target_date):
         _session_total_seconds(user, target_date),
     )
 
-    # Sleep period: 10:00 PM of target_date to 5:00 AM of target_date + 1 day
+    # Sleep period: 10:00 PM of target_date to 6:00 AM of target_date + 1 day
     sleep_start = timezone.make_aware(datetime.combine(target_date, time(22, 0)), tz)
-    sleep_end = timezone.make_aware(datetime.combine(target_date + timedelta(days=1), time(5, 0)), tz)
+    sleep_end = timezone.make_aware(datetime.combine(target_date + timedelta(days=1), time(6, 0)), tz)
     
     # Active usage during sleep period (Late-Night Activity)
     events_night = ScreenUsageEvent.objects.filter(
@@ -81,8 +81,8 @@ def finalize_daily_usage(user, target_date):
         if overlap_end > overlap_start:
             late_night_seconds += int((overlap_end - overlap_start).total_seconds())
 
-    # Sleep time is 7 hours (25200 seconds) minus late night activity
-    total_sleep_window_seconds = 7 * 3600
+    # Sleep time is 8 hours (22:00–06:00) minus late-night screen-on activity
+    total_sleep_window_seconds = 8 * 3600
     sleep_seconds = max(0, total_sleep_window_seconds - late_night_seconds)
 
     # Upsert the finalized data to ScreenTime

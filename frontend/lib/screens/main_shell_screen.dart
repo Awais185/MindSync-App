@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../ui/components/mindsync_app_header.dart';
 import 'tabs/analytics_screen.dart';
 import 'tabs/chat_screen.dart';
 import 'tabs/home_screen.dart';
@@ -20,19 +21,21 @@ class MainShellScreen extends StatefulWidget {
 }
 
 class _MainShellScreenState extends State<MainShellScreen> {
-  static const _pages = <Widget>[
-    HomeScreen(),
-    AnalyticsScreen(),
-    ParentScreen(),
-    ChatScreen(),
-    MoreScreen(),
-  ];
+  final GlobalKey<ChatScreenState> _chatKey = GlobalKey<ChatScreenState>();
 
+  late final List<Widget> _pages;
   late int selectedTab;
 
   @override
   void initState() {
     super.initState();
+    _pages = [
+      const HomeScreen(),
+      const AnalyticsScreen(),
+      const ParentScreen(),
+      ChatScreen(key: _chatKey),
+      const MoreScreen(),
+    ];
     final tab = widget.initialTab;
     selectedTab = tab < 0
         ? 0
@@ -61,9 +64,27 @@ class _MainShellScreenState extends State<MainShellScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: selectedTab,
-        children: _pages,
+      backgroundColor: const Color(0xFFF3F1FB),
+      body: Column(
+        children: [
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.only(right: 12, bottom: 2),
+              child: MindSyncAppHeader(
+                onMenuTap: selectedTab == 3
+                    ? () => _chatKey.currentState?.openDrawer()
+                    : null,
+              ),
+            ),
+          ),
+          Expanded(
+            child: IndexedStack(
+              index: selectedTab,
+              children: _pages,
+            ),
+          ),
+        ],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: selectedTab,

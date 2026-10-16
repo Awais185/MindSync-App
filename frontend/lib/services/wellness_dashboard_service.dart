@@ -123,6 +123,8 @@ class WellnessDashboardData {
     required this.screenMinutesWeek,
     required this.facetSummary,
     required this.mentalHealth,
+    required this.sleepSecondsToday,
+    required this.lateNightSecondsToday,
   });
 
   final int wellbeingScore;
@@ -137,6 +139,8 @@ class WellnessDashboardData {
   final int screenMinutesWeek;
   final String facetSummary;
   final MentalHealthScores mentalHealth;
+  final int sleepSecondsToday;
+  final int lateNightSecondsToday;
 
   static const empty = WellnessDashboardData(
     wellbeingScore: 0,
@@ -151,6 +155,8 @@ class WellnessDashboardData {
     screenMinutesWeek: 0,
     facetSummary: '',
     mentalHealth: MentalHealthScores.empty,
+    sleepSecondsToday: 0,
+    lateNightSecondsToday: 0,
   );
 
   factory WellnessDashboardData.fromJson(Map<String, dynamic> j) {
@@ -176,6 +182,9 @@ class WellnessDashboardData {
       screenMinutesWeek: (j['screen_minutes_week'] as num?)?.toInt() ?? 0,
       facetSummary: (j['facet_summary'] ?? '').toString(),
       mentalHealth: mh,
+      sleepSecondsToday: (j['sleep_seconds_today'] as num?)?.toInt() ?? 0,
+      lateNightSecondsToday:
+          (j['late_night_seconds_today'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -203,6 +212,29 @@ class WellnessDashboardService {
     final prefs = await SharedPreferences.getInstance();
     final uid = prefs.getString('auth.userId') ?? '';
     return uid.isEmpty ? null : uid;
+  }
+
+  static const _wellbeingDateKey = 'home.wellbeing.score_date';
+  static const _wellbeingScoreKey = 'home.wellbeing.score';
+  static const _wellbeingYesterdayKey = 'home.wellbeing.yesterday_score';
+
+  final ValueNotifier<int> wellbeingDeltaPoints = ValueNotifier<int>(0);
+
+  Future<void> _persistWellbeingDelta(int score) async {
+    final prefs = await SharedPreferences.getInstance();
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    final storedDate = prefs.getString(_wellbeingDateKey) ?? '';
+    if (storedDate.isNotEmpty && storedDate != today) {
+      final prevScore = prefs.getInt(_wellbeingScoreKey);
+      if (prevScore != null) {
+        await prefs.setInt(_wellbeingYesterdayKey, prevScore);
+      }
+    }
+    final yesterday = prefs.getInt(_wellbeingYesterdayKey);
+    wellbeingDeltaPoints.value =
+        yesterday != null ? score - yesterday : 0;
+    await prefs.setString(_wellbeingDateKey, today);
+    await prefs.setInt(_wellbeingScoreKey, score);
   }
 
   Future<void> refresh({bool force = false, int days = 7}) async {
@@ -240,7 +272,9 @@ class WellnessDashboardService {
       );
       _lastFetch = DateTime.now();
       if (decoded != null) {
-        dashboard.value = WellnessDashboardData.fromJson(decoded);
+        final next = WellnessDashboardData.fromJson(decoded);
+        dashboard.value = next;
+        await _persistWellbeingDelta(next.wellbeingScore);
       }
     } catch (_) {
       // keep last good payload

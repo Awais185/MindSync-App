@@ -6,11 +6,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'route_observers.dart';
 import 'screens/auth/app_splash_screen.dart';
-import 'screens/auth/first_launch_carousel_screen.dart';
+import 'screens/auth/onboarding/onboarding_splash_flow.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/auth/permission_onboarding_screen.dart';
 import 'screens/auth/disclaimer_screen.dart';
-import 'screens/auth/welcome_screen.dart';
 import 'screens/main_shell_screen.dart';
 import 'services/app_public_service.dart';
 import 'services/local_auth_service.dart';
@@ -42,7 +41,6 @@ class MindSyncScrollBehavior extends MaterialScrollBehavior {
 enum _LaunchTarget {
   splash,
   firstLaunchCarousel,
-  welcome,
   disclaimer,
   login,
   permissionSetup,
@@ -62,6 +60,9 @@ class _MindSyncAppState extends State<MindSyncApp> with WidgetsBindingObserver {
   static const _kFirstLaunchCarouselDone = 'mindsync.first_launch_carousel_done';
 
   _LaunchTarget _target = _LaunchTarget.splash;
+  _LaunchTarget? _targetAfterSplash;
+  bool _splashFinished = false;
+  bool _bootstrapFinished = false;
   final LocalAuthService _auth = LocalAuthService();
   AuthProfile? _pendingProfile;
 
@@ -106,7 +107,6 @@ class _MindSyncAppState extends State<MindSyncApp> with WidgetsBindingObserver {
 
   Future<void> _bootstrap() async {
     final prefs = await SharedPreferences.getInstance();
-    final onboardingDone = prefs.getBool(_kOnboardingDone) ?? false;
     final disclaimerAccepted = prefs.getBool(_kDisclaimerAccepted) ?? false;
     final carouselDone = prefs.getBool(_kFirstLaunchCarouselDone) ?? false;
 
@@ -118,21 +118,28 @@ class _MindSyncAppState extends State<MindSyncApp> with WidgetsBindingObserver {
       await _applyAuthenticatedProfile(profile);
       await SubscriptionService.instance.hydrateFromCache();
       await PlanAccessService.instance.refresh();
-      setState(() => _target = _LaunchTarget.main);
-      return;
+      _targetAfterSplash = _LaunchTarget.main;
+    } else if (!carouselDone) {
+      _targetAfterSplash = _LaunchTarget.firstLaunchCarousel;
+    } else if (!disclaimerAccepted) {
+      _targetAfterSplash = _LaunchTarget.disclaimer;
+    } else {
+      _targetAfterSplash = _LaunchTarget.login;
     }
 
-    setState(() {
-      if (!carouselDone) {
-        _target = _LaunchTarget.firstLaunchCarousel;
-      } else if (!onboardingDone) {
-        _target = _LaunchTarget.welcome;
-      } else if (!disclaimerAccepted) {
-        _target = _LaunchTarget.disclaimer;
-      } else {
-        _target = _LaunchTarget.login;
-      }
-    });
+    _bootstrapFinished = true;
+    _tryAdvancePastSplash();
+  }
+
+  void _onSplashFinished() {
+    _splashFinished = true;
+    _tryAdvancePastSplash();
+  }
+
+  void _tryAdvancePastSplash() {
+    if (!_splashFinished || !_bootstrapFinished || !mounted) return;
+    final next = _targetAfterSplash ?? _LaunchTarget.login;
+    setState(() => _target = next);
   }
 
   Future<void> _applyAuthenticatedProfile(AuthProfile profile) async {
@@ -193,17 +200,23 @@ class _MindSyncAppState extends State<MindSyncApp> with WidgetsBindingObserver {
   Future<void> _completeFirstLaunchCarousel() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kFirstLaunchCarouselDone, true);
-    if (mounted) {
-      setState(() => _target = _LaunchTarget.welcome);
-    }
-  }
-
-  Future<void> _completeWelcome() async {
-    final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kOnboardingDone, true);
     if (mounted) {
       setState(() => _target = _LaunchTarget.disclaimer);
     }
+  }
+
+  Future<void> _onboardingSignIn() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kFirstLaunchCarouselDone, true);
+    await prefs.setBool(_kOnboardingDone, true);
+    final disclaimerAccepted = prefs.getBool(_kDisclaimerAccepted) ?? false;
+    if (!mounted) return;
+    setState(
+      () => _target = disclaimerAccepted
+          ? _LaunchTarget.login
+          : _LaunchTarget.disclaimer,
+    );
   }
 
   Future<void> _acceptDisclaimer() async {
@@ -216,22 +229,19 @@ class _MindSyncAppState extends State<MindSyncApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    Widget home = const AppSplashScreen();
+    Widget home = AppSplashScreen(onFinished: _onSplashFinished);
 
     switch (_target) {
       case _LaunchTarget.splash:
+        home = AppSplashScreen(onFinished: _onSplashFinished);
         break;
       case _LaunchTarget.firstLaunchCarousel:
-        home = FirstLaunchCarouselScreen(
+        home = OnboardingSplashFlow(
           onFinished: () {
             unawaited(_completeFirstLaunchCarousel());
           },
-        );
-        break;
-      case _LaunchTarget.welcome:
-        home = WelcomeScreen(
-          onGetStarted: () {
-            unawaited(_completeWelcome());
+          onSignIn: () {
+            unawaited(_onboardingSignIn());
           },
         );
         break;

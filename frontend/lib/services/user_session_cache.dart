@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'plan_access_service.dart';
 import 'subscription_service.dart';
 import 'wellness_dashboard_service.dart';
+import 'notification_service.dart';
 import 'weekly_mood_service.dart';
 
 /// Clears in-memory caches so a new login never sees the previous user's data.
@@ -25,6 +26,7 @@ class UserSessionCache {
     PlanAccessService.instance.invalidate();
     WellnessDashboardService.instance.resetForNewUser();
     WeeklyMoodService.instance.resetForNewUser();
+    NotificationService.instance.resetForNewUser();
   }
 
   /// Call on logout.
@@ -38,6 +40,8 @@ class UserSessionCache {
     await PlanAccessService.instance.refresh(force: true);
     await WellnessDashboardService.instance.refresh(force: true);
     WeeklyMoodService.instance.startPolling();
+    unawaited(NotificationService.instance.syncTriggers());
+    NotificationService.instance.startPolling();
     _bumpSessionGeneration();
   }
 }

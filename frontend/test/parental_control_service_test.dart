@@ -24,5 +24,35 @@ void main() {
       expect(rule.packageName, 'com.example.app');
       expect(rule.blocked, isTrue);
     });
+
+    test('parseBlockedFlag handles bool, int, and string', () {
+      expect(ParentalControlService.parseBlockedFlag(true), isTrue);
+      expect(ParentalControlService.parseBlockedFlag(1), isTrue);
+      expect(ParentalControlService.parseBlockedFlag('false'), isFalse);
+      expect(ParentalControlService.parseBlockedFlag(null), isFalse);
+    });
+
+    test('sortForDisplay prioritizes YouTube then games', () {
+      final sorted = ParentalAppCatalog.sortForDisplay([
+        const ParentalAppRule(
+          packageName: 'com.dts.freefireth',
+          appLabel: 'Free Fire',
+          blocked: false,
+          isGame: true,
+        ),
+        const ParentalAppRule(
+          packageName: 'com.google.android.youtube',
+          appLabel: 'YouTube',
+          blocked: false,
+        ),
+        const ParentalAppRule(
+          packageName: 'com.example.notes',
+          appLabel: 'Notes',
+          blocked: false,
+        ),
+      ]);
+      expect(sorted.first.packageName, 'com.google.android.youtube');
+      expect(sorted[1].packageName, 'com.dts.freefireth');
+    });
   });
 }

@@ -38,6 +38,15 @@ from .views import (
     UserWeeklyReportAPIView,
     VideoChunkAnalysisAPIView,
 )
+from .analytics_views import AnalyticsDashboardAPIView
+from .notification_views import (
+    NotificationBulkDeleteAPIView,
+    NotificationDetailAPIView,
+    NotificationListAPIView,
+    NotificationMarkAllReadAPIView,
+    NotificationSyncTriggersAPIView,
+    NotificationUnreadCountAPIView,
+)
 from .mood_views import (
     WeeklyMoodLiveAPIView,
     MoodInsightsLiveAPIView,
@@ -67,6 +76,13 @@ urlpatterns = [
     path('usage/weekly/', WeeklyUsageAPIView.as_view()),
     path('usage/monthly/', MonthlyUsageAPIView.as_view()),
     path('usage/live/', LiveUsageAPIView.as_view()),
+    path('analytics/dashboard/', AnalyticsDashboardAPIView.as_view()),
+    path('notifications/', NotificationListAPIView.as_view()),
+    path('notifications/unread-count/', NotificationUnreadCountAPIView.as_view()),
+    path('notifications/sync-triggers/', NotificationSyncTriggersAPIView.as_view()),
+    path('notifications/mark-all-read/', NotificationMarkAllReadAPIView.as_view()),
+    path('notifications/bulk-delete/', NotificationBulkDeleteAPIView.as_view()),
+    path('notifications/<int:notification_id>/', NotificationDetailAPIView.as_view()),
     path('dashboard/wellness/', WellnessDashboardAPIView.as_view()),
     path('reports/summary/', DynamicWeeklySummaryAPIView.as_view()),
     path('reports/weekly/', UserWeeklyReportAPIView.as_view()),

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api_config.dart';
@@ -12,6 +13,7 @@ import '../utils/resilient_http.dart';
 import 'parental_control_service.dart';
 import 'tracking_permission_prefs.dart';
 import 'web_tab_screen_time.dart';
+import 'home_sleep_sync_service.dart';
 import 'wellness_dashboard_service.dart';
 
 class AppUsageItem {
@@ -100,7 +102,7 @@ class ScreenTimeSnapshot {
   /// Last face-reaction pipeline error (JSON or plain text).
   final String faceReactionLastError;
 
-  /// Screen time between 22:00–05:00 local (last 7 calendar days), from Android UsageEvents.
+  /// Screen time between 22:00–06:00 local (last 7 calendar days), from Android UsageEvents.
   final int lateNightWeekSeconds;
 
   /// Approximate foreground opens / app switches during late-night windows (7 days).
@@ -112,7 +114,7 @@ class ScreenTimeSnapshot {
   /// Top apps by late-night foreground time (7 days).
   final List<AppUsageItem> lateNightTopApps;
 
-  /// Screen-on late-night activity & estimated sleep (22:00–05:00), device tracker.
+  /// Screen-on late-night activity & estimated sleep (22:00–06:00), device tracker.
   final LateNightSleepSnapshot lateNightSleep;
 
   static const List<int> _lateNightByDayEmpty = <int>[
@@ -247,6 +249,11 @@ class ScreenTimeService {
   final Map<String, AppUsageItem> _rollingMerged = <String, AppUsageItem>{};
   final ValueNotifier<bool> faceVerified = ValueNotifier<bool>(false);
   final ValueNotifier<double> faceMatchPercent = ValueNotifier<double>(0);
+
+  /// Populated from `/api/auth/usage/daily/` and `/api/screen-time/today/` for Home.
+  int homeYesterdayDaySeconds = 0;
+  int homeBackendSleepSeconds = 0;
+  int homeBackendLateNightSeconds = 0;
 
   Timer? _backendTimer;
   Timer? _osTodayTimer;
@@ -540,6 +547,44 @@ class ScreenTimeService {
       unawaited(refreshRollingAppUsage());
     }
     unawaited(refreshNow());
+    unawaited(persistDevicePermissionGrants(userId: userId));
+  }
+
+  /// Saves OS permission state for the logged-in account (per-user keys on device).
+  Future<void> persistDevicePermissionGrants({
+    String? userId,
+    bool? cameraOverride,
+    bool markSetupDone = true,
+  }) async {
+    final id = userId ?? _currentUserId;
+    if (kIsWeb) {
+      await TrackingPermissionPrefs.saveGrantSnapshot(
+        usage: true,
+        camera: true,
+        screenCapture: false,
+        accessibility: false,
+        markSetupDone: markSetupDone,
+        userId: id,
+      );
+      return;
+    }
+    final usage = await hasUsageAccess();
+    final camStatus = await Permission.camera.status;
+    final camera = cameraOverride ?? camStatus.isGranted;
+    final screenCapture = await hasScreenCapturePermission();
+    final accessibility = await hasAccessibilityService();
+    final setupDone = markSetupDone &&
+        (usage ||
+            await TrackingPermissionPrefs.isSetupMarkedDone(id) ||
+            await TrackingPermissionPrefs.isSetupMarkedDone());
+    await TrackingPermissionPrefs.saveGrantSnapshot(
+      usage: usage,
+      camera: camera,
+      screenCapture: screenCapture,
+      accessibility: accessibility,
+      markSetupDone: setupDone,
+      userId: id,
+    );
   }
 
   Future<bool> hasUsageAccess() async {
@@ -699,6 +744,10 @@ class ScreenTimeService {
         snapshot.value = merged;
         _maybeSeedOsAnchorFromSnapshot(merged);
         _tickTodayLiveDisplay();
+        if (!kIsWeb) {
+          await HomeSleepSyncService.instance
+              .syncFromDeviceSnapshot(merged.lateNightSleep);
+        }
       } else if (_appInBackground && _stickyMonitoringActive) {
         snapshot.value = _withStableMonitoring(snapshot.value);
       }
@@ -706,8 +755,12 @@ class ScreenTimeService {
       if (!kIsWeb || _backendRefreshCount % 2 == 0) {
         await WellnessDashboardService.instance.refresh();
       }
-      if (!kIsWeb && _backendRefreshCount % 20 == 0) {
+      if (!kIsWeb) {
         await flushMidnightScreenTimePending();
+        _todayBackendSyncTick++;
+        if (_todayBackendSyncTick % 4 == 0) {
+          await syncTodayScreenTimeToBackend();
+        }
       }
       _backendRefreshCount++;
     } catch (_) {
@@ -718,6 +771,7 @@ class ScreenTimeService {
   }
 
   int _backendRefreshCount = 0;
+  int _todayBackendSyncTick = 0;
   int _webTabSeconds = 0;
   int _lastWebFlushSeconds = 0;
   Timer? _webFlushTimer;
@@ -767,9 +821,10 @@ class ScreenTimeService {
     // Logged-in totals come from Django (events + finalized days). Native per-app
     // bars/icons only; do not let device-wide UsageStats override JWT-scoped totals.
     final nativeHasLive = trusted && n.nativeTrackerConfigured;
-    final daySeconds = useBackendTotals && b.daySeconds > 0
-        ? b.daySeconds
-        : (nativeHasLive ? n.daySeconds : n.daySeconds);
+    final nativeDay = nativeHasLive ? n.daySeconds : 0;
+    final daySeconds = useBackendTotals
+        ? (b.daySeconds >= nativeDay ? b.daySeconds : nativeDay)
+        : (nativeDay > 0 ? nativeDay : n.daySeconds);
     final weekSeconds = useBackendTotals && b.weekSeconds > 0
         ? b.weekSeconds
         : (nativeHasLive ? n.weekSeconds : n.weekSeconds);
@@ -1038,6 +1093,13 @@ class ScreenTimeService {
     final fgPkg = current?['package_name']?.toString() ?? '';
     final fgSecs = (current?['today_seconds'] as num?)?.toInt() ?? 0;
 
+    homeYesterdayDaySeconds =
+        (daily['yesterday_total_seconds'] as num?)?.toInt() ?? 0;
+    homeBackendSleepSeconds =
+        (trackingToday?['sleep_time'] as num?)?.toInt() ?? 0;
+    homeBackendLateNightSeconds =
+        (trackingToday?['late_night_activity'] as num?)?.toInt() ?? 0;
+
     var daySeconds = (daily['total_seconds'] as num?)?.toInt() ?? 0;
     if (summary != null) {
       final unified = (summary['today_total_seconds'] as num?)?.toInt();
@@ -1166,7 +1228,9 @@ class ScreenTimeService {
     if (userId != null && userId.isNotEmpty) {
       _stickyMonitoringActive = true;
       await startTrackingSession(userId);
+      await flushMidnightScreenTimePending();
     }
+    await persistDevicePermissionGrants(userId: userId);
     await _syncTrackerContext();
     try {
       await _channel.invokeMethod('pingTracker');
@@ -1405,6 +1469,50 @@ class ScreenTimeService {
     if (kIsWeb) return;
     try {
       await _channel.invokeMethod('openManageOverlaySettings');
+    } catch (_) {}
+  }
+
+  static String _localDateIso() {
+    final now = DateTime.now();
+    final y = now.year.toString().padLeft(4, '0');
+    final m = now.month.toString().padLeft(2, '0');
+    final d = now.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
+
+  /// Keeps today's per-user total in Django (calendar day, local midnight reset on device).
+  Future<void> syncTodayScreenTimeToBackend() async {
+    if (kIsWeb) return;
+    final uid = _currentUserId;
+    if (uid == null || uid.isEmpty) return;
+    if (!await hasUsageAccess()) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('auth.accessToken') ?? '';
+      if (token.isEmpty) return;
+
+      final raw = await _channel.invokeMethod<dynamic>('getSessionScreenTimeMs', uid);
+      int ms = 0;
+      if (raw is int) {
+        ms = raw;
+      } else if (raw is num) {
+        ms = raw.toInt();
+      }
+      if (ms <= 0) return;
+
+      await http
+          .post(
+            Uri.parse('$_baseUrl/api/screentime/save-day/'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'total_ms': ms,
+              'date': _localDateIso(),
+            }),
+          )
+          .timeout(const Duration(seconds: 25));
     } catch (_) {}
   }
 

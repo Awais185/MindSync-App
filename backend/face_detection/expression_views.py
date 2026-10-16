@@ -99,14 +99,34 @@ class FaceMoodVideoMatchView(views.APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-            from .mood_scan_service import run_video_mood_on_match
+            from .mood_scan_service import analyze_video_path, run_video_mood_on_match
 
             source = (request.data.get("source") or "face_scan_video").strip()[:32]
-            mood = run_video_mood_on_match(
-                request.user,
-                tmp_path,
-                source=source or "face_scan_video",
-            )
+            persist = source.lower() in {
+                "unlock_verify",
+                "verify_track",
+                "background",
+                "unlock",
+                "scheduled_background",
+            }
+            if persist:
+                mood = run_video_mood_on_match(
+                    request.user,
+                    tmp_path,
+                    source=source,
+                )
+            else:
+                mood = analyze_video_path(tmp_path)
+                return response.Response(
+                    {
+                        "matched": True,
+                        "face_match_score": round(score, 4),
+                        "mood_saved": False,
+                        "mood": mood,
+                        "message": "Video mood prediction complete (not saved).",
+                    },
+                    status=status.HTTP_200_OK,
+                )
             if mood and mood.get("skipped"):
                 return response.Response(
                     {
@@ -185,11 +205,16 @@ class FacialExpressionUploadView(views.APIView):
         except (TypeError, ValueError):
             client_timestamp_ms = None
 
+        identity_preverified = str(
+            request.data.get("identity_preverified") or "false"
+        ).lower() in {"1", "true", "yes"}
         verify_face = str(request.data.get("verify_face") or "false").lower() in {
             "1",
             "true",
             "yes",
         }
+        if identity_preverified:
+            verify_face = False
         run_mood_scan = str(request.data.get("run_mood_scan") or "false").lower() in {
             "1",
             "true",
@@ -222,8 +247,17 @@ class FacialExpressionUploadView(views.APIView):
                 tmp_path = tmp.name
 
             mood_payload = None
-            if verify_face:
-                score, matched = face_match_score_from_video_path(request.user, tmp_path)
+            if identity_preverified:
+                face_score = 1.0
+            elif verify_face:
+                from .identity import face_match_score_from_video_path_multi
+
+                score, matched = face_match_score_from_video_path_multi(
+                    request.user,
+                    tmp_path,
+                    max_frames=6,
+                    unlock_capture=True,
+                )
                 face_score = score
                 if not matched:
                     return response.Response(

@@ -305,7 +305,13 @@ class UnlockFaceVerifier(
             return
         }
 
-        val ok = FaceTrackVerify.verifyStillImage(service, file, applyMatchPause = true)
+        val ok =
+            FaceTrackVerify.verifyStillImage(
+                service,
+                file,
+                applyMatchPause = true,
+                unlockCapture = true,
+            )
         try {
             file.delete()
         } catch (_: Exception) {

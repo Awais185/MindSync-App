@@ -15,8 +15,8 @@ from .identity import (
     face_match_score_from_video_path_multi,
 )
 from .models import FacialExpressionCapture
-from .emotion_score_fallback import merge_emotion_fallback, openface_results_weak
 from .openface_pipeline import is_openface_available, run_openface_and_analyze
+from .user_ml_policy import user_allows_adult_ml
 from .video_au_tracker import run_cross_platform_video_analysis
 
 logger = logging.getLogger(__name__)
@@ -52,13 +52,18 @@ def process_facial_expression_capture_sync(capture_id: int) -> bool:
     if capture.status == FacialExpressionCapture.STATUS_COMPLETED and capture.au_results:
         return True
 
-    # Background 20s clips: verify identity on multiple frames before OpenFace.
-    score, matched = face_match_score_from_video_path_multi(
-        capture.user,
-        capture.video.path,
-        threshold=BACKGROUND_FACE_MATCH_THRESHOLD,
-        max_frames=6,
-    )
+    prior_score = capture.face_match_score
+    if prior_score is not None and prior_score >= BACKGROUND_FACE_MATCH_THRESHOLD:
+        score = float(prior_score)
+        matched = True
+    else:
+        score, matched = face_match_score_from_video_path_multi(
+            capture.user,
+            capture.video.path,
+            threshold=BACKGROUND_FACE_MATCH_THRESHOLD,
+            max_frames=6,
+            unlock_capture=True,
+        )
     capture.face_match_score = score
     if not matched:
         logger.warning(
@@ -83,6 +88,8 @@ def process_facial_expression_capture_sync(capture_id: int) -> bool:
         update_fields=["face_match_score", "status", "processing_error", "updated_at"]
     )
 
+    allow_ml = user_allows_adult_ml(capture.user)
+
     try:
         clip_cap = float(capture.duration_seconds or 20) + 10.0
         video_path = capture.video.path
@@ -94,6 +101,7 @@ def process_facial_expression_capture_sync(capture_id: int) -> bool:
                 fast_mode=False,
                 max_video_seconds=clip_cap,
                 prefer_reencode=True,
+                use_depression_model=allow_ml,
             )
         else:
             analysis = run_cross_platform_video_analysis(
@@ -102,14 +110,21 @@ def process_facial_expression_capture_sync(capture_id: int) -> bool:
                 include_tracked_video=False,
             )
         scores = dict(analysis.scores) if isinstance(analysis.scores, dict) else {}
-        if openface_results_weak(scores):
-            try:
-                from .emotion_models import predict_video_path
 
-                deepface = predict_video_path(capture.video.path, max_frames=10, sample_fps=1.0)
+        mood = capture.mood if isinstance(capture.mood, dict) else None
+        if allow_ml and not mood:
+            try:
+                from .adult_emotion_inference import predict_video_path
+
+                mood = predict_video_path(
+                    capture.video.path,
+                    max_frames=4,
+                    sample_fps=0.15,
+                )
             except Exception:
-                deepface = {}
-            scores = merge_emotion_fallback(scores, deepface_video=deepface, chat_video=None)
+                logger.exception("Emotion ensemble failed for capture %s", capture_id)
+
+        capture.mood = mood or {}
         capture.au_results = {
             **scores,
             "au_summary": analysis.au_summary,
@@ -117,6 +132,7 @@ def process_facial_expression_capture_sync(capture_id: int) -> bool:
             "behavioral_insights": analysis.behavioral_insights,
             "recommendations": analysis.recommendations,
             "peak_timestamps": analysis.peak_timestamps,
+            "adult_ml_applied": allow_ml,
         }
         capture.dominant_state = str(scores.get("dominant_state") or "neutral")[:32]
         capture.stress_score = int(scores.get("stress_score") or 0)
@@ -129,6 +145,7 @@ def process_facial_expression_capture_sync(capture_id: int) -> bool:
         capture.save(
             update_fields=[
                 "au_results",
+                "mood",
                 "dominant_state",
                 "stress_score",
                 "anxiety_score",
@@ -140,7 +157,47 @@ def process_facial_expression_capture_sync(capture_id: int) -> bool:
                 "updated_at",
             ]
         )
-        # Keep video file for 12h; cleanup_old_videos removes files and keeps AU rows.
+        if allow_ml:
+            try:
+                from .mental_health_session import update_daily_session_metrics
+                from .models import MentalHealthResult
+
+                mood_label = ""
+                if isinstance(capture.mood, dict):
+                    mood_label = str(
+                        capture.mood.get("prediction")
+                        or capture.mood.get("class")
+                        or ""
+                    )
+                MentalHealthResult.objects.create(
+                    user=capture.user,
+                    stress_score=capture.stress_score,
+                    anxiety_score=capture.anxiety_score,
+                    depression_score=capture.depression_score,
+                    mood=mood_label[:64],
+                    dominant_state=capture.dominant_state or "neutral",
+                    source_type=MentalHealthResult.SOURCE_RANDOM_USAGE,
+                    scan_type=MentalHealthResult.SCAN_UPLOADED,
+                    reaction_app_name=capture.source_app_name or "",
+                    reaction_package_name=capture.source_package_name or "",
+                    openface_summary={
+                        "capture_id": capture.id,
+                        "active_aus": capture.active_aus or [],
+                        "au_results": capture.au_results or {},
+                    },
+                )
+                update_daily_session_metrics(
+                    capture.user,
+                    mood_label=mood_label or capture.dominant_state,
+                    stress=capture.stress_score,
+                    anxiety=capture.anxiety_score,
+                    depression=capture.depression_score,
+                )
+            except Exception:
+                logger.exception(
+                    "MentalHealthResult row failed for facial expression %s", capture_id
+                )
+
         logger.info("Facial expression capture %s processed successfully", capture_id)
         return True
     except Exception as exc:

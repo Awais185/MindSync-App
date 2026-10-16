@@ -8,6 +8,7 @@ import '../pages/emergency_screen.dart';
 import '../pages/face_scan_screen.dart';
 import '../pages/profile_screen.dart';
 import '../pages/recommendation_screen.dart';
+import '../pages/permissions_settings_screen.dart';
 import '../pages/upgrade_plan_screen.dart';
 import '../pages/doctor_inbox_screen.dart';
 import '../../services/local_auth_service.dart';
@@ -15,7 +16,6 @@ import '../../services/screen_time_service.dart';
 import '../../services/recommendations_service.dart';
 import '../../services/subscription_service.dart';
 import '../../services/user_session_cache.dart';
-import '../../ui/components/mind_sync_header.dart';
 import '../../ui/layout/mindsync_layout.dart';
 
 class MoreScreen extends StatefulWidget {
@@ -76,6 +76,7 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
     return Scaffold(
       backgroundColor: const Color(0xFFF5F6FA),
       body: SafeArea(
+        top: false,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(
             parent: BouncingScrollPhysics(),
@@ -83,16 +84,6 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
           cacheExtent: 1200,
           padding: MindSyncLayout.pagePadding(context, top: 10, bottom: 100),
           children: [
-            MindSyncHeader(
-              onProfileTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                );
-              },
-              profileAvatarImageUrl: _profile?.faceImage,
-            ),
-            const SizedBox(height: 24),
-
             // Profile Section (name + email; opens profile settings)
             GestureDetector(
               onTap: () {
@@ -430,7 +421,30 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
             ],
             const SizedBox(height: 28),
 
-            // SUPPORT & GROWTH Section (Duplicate removed - already included above)
+            const Text(
+              'SETTINGS',
+              style: TextStyle(
+                color: Color(0xFF8B8D98),
+                letterSpacing: 1.8,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _MenuTile(
+              icon: Icons.security_rounded,
+              title: 'Permissions',
+              subtitle: 'View and manage app access',
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const PermissionsSettingsScreen(),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 28),
+
             // Sign Out Button
             GestureDetector(
               onTap: () => _showSignOutDialog(context),

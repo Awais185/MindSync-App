@@ -1,4 +1,4 @@
-"""UI mood detection — no face ownership check (background monitoring unchanged)."""
+"""Manual face-scan UI — inference only; never writes to the database."""
 
 from __future__ import annotations
 
@@ -7,33 +7,40 @@ import tempfile
 
 from rest_framework import parsers, permissions, response, status, views
 
-from .mood_scan_service import analyze_image_bytes, analyze_video_path
+from .dual_model_service import analyze_manual_image, analyze_manual_video
 
 
 class FaceMoodDetectImageView(views.APIView):
     """
     POST /api/face/mood-detect/image/
-    multipart: image — predicts mood for any face (no identity verification).
+    multipart: image — emotion + depression (OpenFace); not persisted.
     """
 
     permission_classes = (permissions.IsAuthenticated,)
     parser_classes = (parsers.MultiPartParser, parsers.FormParser)
 
     def post(self, request):
-        if "image" not in request.data:
+        upload = request.FILES.get("image") or request.data.get("image")
+        if upload is None:
             return response.Response(
                 {"error": "image file is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            image_bytes = request.data["image"].read()
-            mood = analyze_image_bytes(image_bytes)
+            image_bytes = upload.read()
+            if not image_bytes:
+                return response.Response(
+                    {"error": "empty_image"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            dual = analyze_manual_image(image_bytes)
             return response.Response(
                 {
                     "mood_saved": False,
-                    "mood": mood,
-                    "identity_check": "skipped_ui_demo",
-                    "message": "Mood prediction complete.",
+                    "mood": dual.get("mood"),
+                    "depression": dual.get("depression"),
+                    "identity_check": "manual_ui_not_saved",
+                    "message": "Emotion and depression analysis complete (not saved).",
                 },
                 status=status.HTTP_200_OK,
             )
@@ -47,14 +54,15 @@ class FaceMoodDetectImageView(views.APIView):
 class FaceMoodDetectVideoView(views.APIView):
     """
     POST /api/face/mood-detect/video/
-    multipart: video — predicts mood for any face (no identity verification).
+    multipart: video — emotion + depression; not saved.
     """
 
     permission_classes = (permissions.IsAuthenticated,)
     parser_classes = (parsers.MultiPartParser, parsers.FormParser)
 
     def post(self, request):
-        if "video" not in request.data:
+        video_file = request.FILES.get("video") or request.data.get("video")
+        if video_file is None:
             return response.Response(
                 {"error": "video file is required"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -62,7 +70,6 @@ class FaceMoodDetectVideoView(views.APIView):
 
         tmp_path = None
         try:
-            video_file = request.data["video"]
             suffix = ".mp4"
             name = getattr(video_file, "name", "") or ""
             lower = name.lower()
@@ -76,13 +83,14 @@ class FaceMoodDetectVideoView(views.APIView):
                     tmp.write(chunk)
                 tmp_path = tmp.name
 
-            mood = analyze_video_path(tmp_path)
+            dual = analyze_manual_video(tmp_path)
             return response.Response(
                 {
                     "mood_saved": False,
-                    "mood": mood,
+                    "mood": dual.get("mood"),
+                    "depression": dual.get("depression"),
                     "identity_check": "skipped_ui_demo",
-                    "message": "Video mood prediction complete.",
+                    "message": "Video emotion and depression analysis complete.",
                 },
                 status=status.HTTP_200_OK,
             )

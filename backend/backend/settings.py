@@ -241,7 +241,22 @@ STATIC_URL = 'static/'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# Emotion API: local weights under face_detection/weights/facial_emotions (see download_emotion_weights.py)
+# Custom ResNet18 adult emotion ensemble (best_resnet18_fold*.pt)
+ADULT_EMOTION_MODEL_DIR = Path(
+    os.environ.get(
+        "ADULT_EMOTION_MODEL_DIR",
+        str(BASE_DIR / "models" / "Adult Emotion Detection Model"),
+    )
+).expanduser()
+
+ADULT_DEPRESSION_MODEL_DIR = Path(
+    os.environ.get(
+        "ADULT_DEPRESSION_MODEL_DIR",
+        str(BASE_DIR / "models" / "Adult depression detection" / "model"),
+    )
+).expanduser()
+
+# Legacy HF emotion weights (unused for mood scans; kept for optional tooling)
 EMOTION_MODEL_ID = os.environ.get("EMOTION_MODEL_ID", "dima806/facial_emotions_image_detection").strip()
 EMOTION_WEIGHTS_DIR = Path(BASE_DIR) / "face_detection" / "weights" / "facial_emotions"
 # Cap frames analyzed per uploaded video (cost / latency)

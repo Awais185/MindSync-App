@@ -1,54 +1,55 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import '../screens/auth/permission_onboarding_screen.dart';
 import 'local_auth_service.dart';
 import 'screen_time_service.dart';
 import 'tracking_permission_prefs.dart';
 
-/// Usage access + Camera (critical). Screen capture is optional (native flow).
+/// Screen time depends on usage access only. Other permissions are requested just-in-time.
 class TrackingPermissionsGate {
   TrackingPermissionsGate._();
 
   static const trackingSetupDoneKey = TrackingPermissionPrefs.trackingSetupDoneKey;
 
-  static Future<bool> _coreTrackingGranted() async {
-    final usage = await ScreenTimeService.instance.hasUsageAccess();
-    if (!usage) return false;
-    final cam = await Permission.camera.status;
-    if (!cam.isGranted) return false;
-    return true;
+  static Future<bool> isUsageAccessGranted() async {
+    if (kIsWeb) return true;
+    return await ScreenTimeService.instance.hasUsageAccess();
   }
 
-  /// Usage — required before starting [ScreenTimeService].
-  static Future<bool> isCoreTrackingGranted() => _coreTrackingGranted();
+  /// Usage access — required before starting [ScreenTimeService].
+  static Future<bool> isCoreTrackingGranted() => isUsageAccessGranted();
 
-  /// Starts polling / sync only when core OS permissions are granted (no-op otherwise).
+  /// Starts polling / sync only when usage access is granted (no-op otherwise).
   static Future<void> startScreenTimeIfPermitted() async {
     if (kIsWeb) {
       ScreenTimeService.instance.start();
       return;
     }
-    if (!await _coreTrackingGranted()) return;
+    if (!await isUsageAccessGranted()) return;
     await ScreenTimeService.instance.syncScreenCaptureGrant();
     ScreenTimeService.instance.start();
   }
 
-  /// True when core OS permissions are granted (auto-heals stale setup flags).
-  static Future<bool> isFullyGranted() async {
-    if (!await TrackingPermissionPrefs.isSetupMarkedDone()) {
-      return false;
+  /// True after this account finished permission onboarding, or usage access is on device.
+  static Future<bool> isFullyGranted([String? userId]) async {
+    if (await TrackingPermissionPrefs.isSetupMarkedDone(userId)) {
+      return true;
     }
-    return _coreTrackingGranted();
+    if (!kIsWeb && await isUsageAccessGranted()) {
+      return true;
+    }
+    return false;
   }
 
-  /// After username/password succeeds. Skips UI if setup was already saved.
+  /// After username/password succeeds. Skips UI if onboarding was already completed or skipped.
   static Future<bool> runMandatoryAfterAuthenticatedSession(
     BuildContext context,
     LocalAuthService auth,
   ) async {
-    if (await isFullyGranted()) return true;
+    final userId = await auth.getStoredUserId();
+    await ScreenTimeService.instance.persistDevicePermissionGrants(userId: userId);
+    if (await isFullyGranted(userId)) return true;
     if (!context.mounted) return false;
 
     final ok = await Navigator.of(context).push<bool>(
@@ -60,11 +61,6 @@ class TrackingPermissionsGate {
         false;
 
     if (!ok) {
-      await auth.logout();
-      return false;
-    }
-
-    if (!await _coreTrackingGranted()) {
       await auth.logout();
       return false;
     }

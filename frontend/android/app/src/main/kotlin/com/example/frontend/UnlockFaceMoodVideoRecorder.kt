@@ -3,11 +3,13 @@ package com.example.frontend
 import android.os.Handler
 import android.view.Surface
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FileOutputOptions
-import androidx.camera.video.Quality
 import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
@@ -17,25 +19,34 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import com.google.mlkit.vision.common.InputImage
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * After unlock image verify succeeds, records a short front-camera mood video (7s)
- * without changing the still-image verify-track flow.
+ * After unlock still-image identity match, records a 30s front-camera clip for OpenFace
+ * (uploaded as scheduled background / device unlock) and mood pipeline.
  */
 object UnlockFaceMoodVideoRecorder {
-    private const val VIDEO_MS = 7_000L
+    private const val VIDEO_MS = 30_000L
+    private const val FACE_WAIT_MS = 15_000L
+    private const val DURATION_SEC = 30
     private val inFlight = AtomicBoolean(false)
     private val uploadExecutor = Executors.newSingleThreadExecutor()
     private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
 
     fun scheduleAfterUnlockMatch(service: BackgroundUsageService, mainHandler: Handler) {
         if (!inFlight.compareAndSet(false, true)) return
+        if (!MonitoringPolicy.cameraCaptureAllowed(service)) {
+            inFlight.set(false)
+            return
+        }
         cameraExecutor.execute {
             try {
                 if (!CameraCaptureCoordinator.tryAcquireUnlockMoodVideo(service)) {
+                    inFlight.set(false)
                     return@execute
                 }
                 val provider = ProcessCameraProvider.getInstance(service).get()
@@ -43,7 +54,8 @@ object UnlockFaceMoodVideoRecorder {
                     recordClip(service, mainHandler, provider)
                 }
             } catch (e: Exception) {
-                MonitoringLog.w("Unlock mood video skipped: ${e.message}")
+                MonitoringLog.w("Unlock OpenFace video skipped: ${e.message}")
+                CameraCaptureCoordinator.releaseUnlockMoodVideo()
                 inFlight.set(false)
             }
         }
@@ -56,10 +68,13 @@ object UnlockFaceMoodVideoRecorder {
     ) {
         val lifecycle = CamLifecycle()
         var recording: Recording? = null
-        val outFile = File(service.cacheDir, "unlock_mood_${System.currentTimeMillis()}.mp4")
+        var imageAnalysis: ImageAnalysis? = null
+        var faceSeen = false
+        val outFile = File(service.cacheDir, "unlock_openface_${System.currentTimeMillis()}.mp4")
 
         fun cleanupCamera() {
             try {
+                imageAnalysis?.clearAnalyzer()
                 provider.unbindAll()
             } catch (_: Exception) {
             }
@@ -68,6 +83,19 @@ object UnlockFaceMoodVideoRecorder {
             CameraCaptureCoordinator.releaseUnlockMoodVideo()
             inFlight.set(false)
         }
+
+        val faceTimeoutRunnable =
+            Runnable {
+                if (!faceSeen) {
+                    MonitoringLog.w("Unlock OpenFace video: no face — aborting")
+                    try {
+                        recording?.stop()
+                    } catch (_: Exception) {
+                    }
+                    outFile.delete()
+                    cleanupCamera()
+                }
+            }
 
         val stopRunnable =
             Runnable {
@@ -97,7 +125,7 @@ object UnlockFaceMoodVideoRecorder {
                                 setDefaultBufferSize(16, 16)
                             }
                         val surface = Surface(st)
-                        request.provideSurface(surface, Executors.newSingleThreadExecutor()) {
+                        request.provideSurface(surface, analysisExecutor) {
                             try {
                                 surface.release()
                                 st.release()
@@ -106,14 +134,73 @@ object UnlockFaceMoodVideoRecorder {
                         }
                     }
                 }
+            val analysis =
+                ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+            imageAnalysis = analysis
+            analysis.setAnalyzer(analysisExecutor) { proxy ->
+                if (faceSeen) {
+                    proxy.close()
+                    return@setAnalyzer
+                }
+                val mediaImage = proxy.image
+                if (mediaImage == null) {
+                    proxy.close()
+                    return@setAnalyzer
+                }
+                val input =
+                    InputImage.fromMediaImage(
+                        mediaImage,
+                        proxy.imageInfo.rotationDegrees,
+                    )
+                FacePresenceDetector.detectPresence(input) { present ->
+                    proxy.close()
+                    if (present) {
+                        faceSeen = true
+                        mainHandler.post {
+                            mainHandler.removeCallbacks(faceTimeoutRunnable)
+                            startRecording(
+                                service,
+                                mainHandler,
+                                capture,
+                                outFile,
+                                stopRunnable,
+                                cleanupCamera = { cleanupCamera() },
+                                recordingHolder = { recording = it },
+                            )
+                        }
+                    }
+                }
+            }
             service.setCameraForegroundElevated(true)
             provider.bindToLifecycle(
                 lifecycle,
                 CameraSelector.DEFAULT_FRONT_CAMERA,
                 preview,
                 capture,
+                analysis,
             )
-            recording =
+            mainHandler.postDelayed(faceTimeoutRunnable, FACE_WAIT_MS)
+        } catch (e: Exception) {
+            mainHandler.removeCallbacks(faceTimeoutRunnable)
+            outFile.delete()
+            cleanupCamera()
+            MonitoringLog.w("Unlock OpenFace video bind failed: ${e.message}")
+        }
+    }
+
+    private fun startRecording(
+        service: BackgroundUsageService,
+        mainHandler: Handler,
+        capture: VideoCapture<Recorder>,
+        outFile: File,
+        stopRunnable: Runnable,
+        cleanupCamera: () -> Unit,
+        recordingHolder: (Recording?) -> Unit,
+    ) {
+        try {
+            val session =
                 capture.output
                     .prepareRecording(service, FileOutputOptions.Builder(outFile).build())
                     .start(ContextCompat.getMainExecutor(service)) { event ->
@@ -124,24 +211,39 @@ object UnlockFaceMoodVideoRecorder {
                                 !event.hasError() && outFile.exists() && outFile.length() > 4096L
                             if (ok) {
                                 uploadExecutor.execute {
-                                    val uploaded = UnlockFaceMoodVideoUploader.upload(service, outFile)
+                                    val uploaded =
+                                        FacialExpressionUploader.upload(
+                                            context = service,
+                                            file = outFile,
+                                            sourceType = "scheduled_background",
+                                            sourceAppName = "Device unlock",
+                                            sourcePackageName = "",
+                                            durationSeconds = DURATION_SEC,
+                                            verifyFace = false,
+                                            identityPreverified = true,
+                                            recordingType = "facial_expression_detection",
+                                        )
                                     if (uploaded) {
-                                        MonitoringLog.i("Unlock mood video saved to database (7s)")
+                                        MonitoringLog.i(
+                                            "Unlock OpenFace clip uploaded (${DURATION_SEC}s)",
+                                        )
+                                    } else {
+                                        MonitoringLog.w("Unlock OpenFace clip upload failed")
                                     }
                                     runCatching { outFile.delete() }
                                 }
                             } else {
                                 outFile.delete()
-                                MonitoringLog.w("Unlock mood video record failed")
+                                MonitoringLog.w("Unlock OpenFace video record failed")
                             }
                         }
                     }
+            recordingHolder(session)
             mainHandler.postDelayed(stopRunnable, VIDEO_MS)
         } catch (e: Exception) {
-            mainHandler.removeCallbacks(stopRunnable)
-            outFile.delete()
             cleanupCamera()
-            MonitoringLog.w("Unlock mood video bind failed: ${e.message}")
+            outFile.delete()
+            MonitoringLog.w("Unlock OpenFace record start failed: ${e.message}")
         }
     }
 

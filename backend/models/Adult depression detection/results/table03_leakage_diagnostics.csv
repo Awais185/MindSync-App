@@ -1,0 +1,6 @@
+,value
+label_runs,4.0
+mean_lag1_autocorr_AU_r,0.983
+mean_lag2000_autocorr_AU_r,0.164
+share_rows_with_exact_duplicate,0.001
+share_rows_whose_identical_vector_has_conflicting_labels,0.0013

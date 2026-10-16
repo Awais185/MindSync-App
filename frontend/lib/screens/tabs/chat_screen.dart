@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../pages/report_screen.dart';
-import '../../widgets/mindsync_logo.dart';
 import '../../widgets/mindsync_chat_charts.dart';
 import '../../services/chat_behavior_context_service.dart';
 import '../../services/plan_access_service.dart';
@@ -14,11 +13,13 @@ class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
 
   @override
-  State<ChatScreen> createState() => _ChatScreenState();
+  State<ChatScreen> createState() => ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class ChatScreenState extends State<ChatScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  void openDrawer() => _scaffoldKey.currentState?.openDrawer();
   final TextEditingController _messageController = TextEditingController();
   final List<ChatMessage> _messages = [];
   final List<Map<String, String>> _history = [];
@@ -367,12 +368,9 @@ class _ChatScreenState extends State<ChatScreen> {
       backgroundColor: const Color(0xFFF5F6FA),
       drawer: _buildSessionDrawer(),
       body: SafeArea(
+        top: false,
         child: Column(
           children: [
-            // Header
-            _buildHeader(context),
-
-            // Chat Messages
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
@@ -418,71 +416,6 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildHeader(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF5F6FA),
-        border: Border(
-          bottom: BorderSide(color: const Color(0xFFE5E5EA).withValues(alpha: 0.5)),
-        ),
-      ),
-      child: Row(
-        children: [
-          const Padding(
-            padding: EdgeInsets.only(left: 5),
-            child: MindSyncLogo(height: 90, width: 140),
-          ),
-          const Spacer(),
-          IconButton(
-            tooltip: 'Chat history',
-            icon: const Icon(Icons.menu_rounded, color: Color(0xFF6F39E8)),
-            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-          ),
-          const SizedBox(width: 4),
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: const Color(0xFFEDE9FB),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: IconButton(
-              padding: EdgeInsets.zero,
-              tooltip: 'New chat',
-              icon: const Icon(
-                Icons.add_rounded,
-                size: 20,
-                color: Color(0xFF6F39E8),
-              ),
-              onPressed: _startNewChat,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: const Color(0xFFEDE9FB),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: IconButton(
-              padding: EdgeInsets.zero,
-              icon: const Icon(
-                Icons.insights_rounded,
-                size: 18,
-                color: Color(0xFF6F39E8),
-              ),
-              onPressed: () {
-                _openWeeklyReport();
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildSessionDrawer() {
     return Drawer(
       backgroundColor: const Color(0xFFF8F7FC),
@@ -524,6 +457,26 @@ class _ChatScreenState extends State<ChatScreen> {
                   style: ElevatedButton.styleFrom(
                     foregroundColor: Colors.white,
                     backgroundColor: const Color(0xFF6F39E8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: OutlinedButton.icon(
+                  onPressed: _openWeeklyReport,
+                  icon: const Icon(Icons.insights_rounded, size: 20),
+                  label: const Text('Weekly report'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF6F39E8),
+                    side: const BorderSide(color: Color(0xFFD8CCF5)),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
                     ),

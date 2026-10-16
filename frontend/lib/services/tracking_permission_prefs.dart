@@ -13,24 +13,37 @@ abstract final class TrackingPermissionPrefs {
   static const String screenCaptureSkippedKey =
       'mindsync.perm.screen_capture_skipped';
 
+  static String scopedKey(String base, String? userId) {
+    if (userId == null || userId.isEmpty) return base;
+    return '$base.$userId';
+  }
+
   static Future<({
     bool usage,
     bool camera,
     bool screenCapture,
     bool accessibility,
     bool screenCaptureSkipped,
-  })> readGrantSnapshot() async {
+  })> readGrantSnapshot({String? userId}) async {
     final prefs = await SharedPreferences.getInstance();
+    bool readBool(String base) {
+      if (userId != null && userId.isNotEmpty) {
+        final scoped = prefs.getBool(scopedKey(base, userId));
+        if (scoped != null) return scoped;
+      }
+      return prefs.getBool(base) ?? false;
+    }
+
     return (
-      usage: prefs.getBool(usageGrantedKey) ?? false,
-      camera: prefs.getBool(cameraGrantedKey) ?? false,
-      screenCapture: prefs.getBool(screenCaptureGrantedKey) ?? false,
-      accessibility: prefs.getBool(accessibilityGrantedKey) ?? false,
-      screenCaptureSkipped: prefs.getBool(screenCaptureSkippedKey) ?? false,
+      usage: readBool(usageGrantedKey),
+      camera: readBool(cameraGrantedKey),
+      screenCapture: readBool(screenCaptureGrantedKey),
+      accessibility: readBool(accessibilityGrantedKey),
+      screenCaptureSkipped: readBool(screenCaptureSkippedKey),
     );
   }
 
-  /// Persist which steps the user completed during onboarding (for skip on reopen).
+  /// Persist which steps the user completed (device + per-account on this phone).
   static Future<void> saveGrantSnapshot({
     required bool usage,
     required bool camera,
@@ -38,32 +51,53 @@ abstract final class TrackingPermissionPrefs {
     required bool accessibility,
     bool? screenCaptureSkipped,
     bool markSetupDone = true,
+    String? userId,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(usageGrantedKey, usage);
-    await prefs.setBool(cameraGrantedKey, camera);
-    await prefs.setBool(screenCaptureGrantedKey, screenCapture);
-    await prefs.setBool(accessibilityGrantedKey, accessibility);
+
+    Future<void> writeBool(String base, bool value) async {
+      await prefs.setBool(base, value);
+      if (userId != null && userId.isNotEmpty) {
+        await prefs.setBool(scopedKey(base, userId), value);
+      }
+    }
+
+    await writeBool(usageGrantedKey, usage);
+    await writeBool(cameraGrantedKey, camera);
+    await writeBool(screenCaptureGrantedKey, screenCapture);
+    await writeBool(accessibilityGrantedKey, accessibility);
     if (screenCaptureSkipped != null) {
-      await prefs.setBool(screenCaptureSkippedKey, screenCaptureSkipped);
+      await writeBool(screenCaptureSkippedKey, screenCaptureSkipped);
     }
     if (markSetupDone) {
-      await prefs.setBool(trackingSetupDoneKey, true);
+      await writeBool(trackingSetupDoneKey, true);
     }
   }
 
-  static Future<void> markScreenCaptureSkipped() async {
+  static Future<void> markScreenCaptureSkipped({String? userId}) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(screenCaptureSkippedKey, true);
+    if (userId != null && userId.isNotEmpty) {
+      await prefs.setBool(scopedKey(screenCaptureSkippedKey, userId), true);
+    }
   }
 
-  static Future<bool> isScreenCaptureSkipped() async {
+  static Future<bool> isScreenCaptureSkipped({String? userId}) async {
     final prefs = await SharedPreferences.getInstance();
+    if (userId != null && userId.isNotEmpty) {
+      final scoped = prefs.getBool(scopedKey(screenCaptureSkippedKey, userId));
+      if (scoped != null) return scoped;
+    }
     return prefs.getBool(screenCaptureSkippedKey) ?? false;
   }
 
-  static Future<bool> isSetupMarkedDone() async {
+  static Future<bool> isSetupMarkedDone([String? userId]) async {
     final prefs = await SharedPreferences.getInstance();
+    if (userId != null && userId.isNotEmpty) {
+      if (prefs.getBool(scopedKey(trackingSetupDoneKey, userId)) ?? false) {
+        return true;
+      }
+    }
     return prefs.getBool(trackingSetupDoneKey) ?? false;
   }
 }

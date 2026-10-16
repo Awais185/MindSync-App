@@ -1,4 +1,4 @@
-"""Run chat mood models on matched face captures and persist results."""
+"""Background mood scans (saved) vs manual UI inference (not saved)."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 def mood_success_message(mood: dict[str, Any], modality: str) -> str:
-    """Human-readable confirmation after mood is saved."""
     pred = (
         mood.get("prediction")
+        or mood.get("class")
         or mood.get("dominant_emotion")
         or mood.get("emotion")
         or mood.get("label")
@@ -42,33 +42,21 @@ def mood_success_message(mood: dict[str, Any], modality: str) -> str:
     else:
         conf_part = ""
     if modality == FaceMoodScan.MODALITY_VIDEO:
-        return f"10s video captured and mood saved: {pred_str}{conf_part}"
-    return f"Photo captured and mood saved: {pred_str}{conf_part}"
+        return f"Video analyzed — mood: {pred_str}{conf_part}"
+    return f"Mood: {pred_str}{conf_part}"
 
 
 def analyze_image_bytes(image_bytes: bytes, filename: str = "capture.jpg") -> dict[str, Any]:
-    from django.core.files.uploadedfile import SimpleUploadedFile
+    """ResNet18 ensemble only — no Hugging Face / chat pipeline."""
+    from .adult_emotion_inference import predict_image_bytes as _predict
 
-    from chat.models import analyze_uploaded_image_file
-
-    uploaded = SimpleUploadedFile(filename, image_bytes, content_type="image/jpeg")
-    prediction, confidence = analyze_uploaded_image_file(uploaded)
-    return {
-        "status": "success",
-        "modality": FaceMoodScan.MODALITY_IMAGE,
-        "prediction": prediction,
-        "confidence": round(float(confidence), 4),
-    }
+    return _predict(image_bytes)
 
 
 def analyze_video_path(video_path: str) -> dict[str, Any]:
-    from chat.video_model import analyze_video_file_path
+    from .adult_emotion_inference import predict_video_path as _predict_video
 
-    result = analyze_video_file_path(video_path)
-    payload = dict(result) if isinstance(result, dict) else {"raw": result}
-    payload["status"] = payload.get("status") or "success"
-    payload["modality"] = FaceMoodScan.MODALITY_VIDEO
-    return payload
+    return _predict_video(video_path, max_frames=12, sample_fps=1.0)
 
 
 def save_face_mood_scan(
@@ -108,20 +96,19 @@ def save_face_mood_scan(
 
         on_mood_scan_saved(user)
     except Exception:
-        logger.exception('Mood window hook failed for user %s', user.id)
+        logger.exception("Mood window hook failed for user %s", user.id)
     logger.info(
         "Face mood saved user:%s scan_id:%s modality:%s matched:%s prediction:%s",
         user.id,
         row.id,
         modality,
         matched,
-        mood.get("prediction") or mood.get("dominant_emotion") or mood.get("status"),
+        mood.get("prediction") or mood.get("class") or mood.get("status"),
     )
     return row
 
 
 def mood_scan_cooldown_remaining_seconds(user) -> int:
-    """Seconds until another image/video mood scan is allowed."""
     last = (
         FaceMoodScan.objects.filter(user=user, matched=True)
         .order_by("-created_at")
@@ -158,11 +145,60 @@ def _enrich_mood_response(mood: dict[str, Any], row: FaceMoodScan) -> dict[str, 
     return out
 
 
-def run_image_mood_on_match(user, image_bytes: bytes, source: str = "verify_track") -> dict[str, Any] | None:
+def _persist_background_metrics(
+    user,
+    mood: dict[str, Any],
+    source: str,
+    depression: dict[str, Any] | None = None,
+    image_bytes: bytes | None = None,
+) -> None:
+    from .adult_emotion_inference import mental_health_scores_from_emotion
+    from .mental_health_session import persist_background_emotion_session
+
+    label = str(mood.get("prediction") or mood.get("class") or "Neutral")
+    if depression and depression.get("depression_score") is not None:
+        stress = int(depression.get("stress_score") or 0)
+        anxiety = int(depression.get("anxiety_score") or 0)
+        depression_i = int(depression.get("depression_score") or 0)
+    else:
+        stress, anxiety, depression_i = mental_health_scores_from_emotion(label)
+    mood = dict(mood)
+    mood["stress_score"] = stress
+    mood["anxiety_score"] = anxiety
+    mood["depression_score"] = depression_i
+    if depression:
+        mood["depression_model"] = depression
+    persist_background_emotion_session(
+        user,
+        mood_label=label,
+        stress=stress,
+        anxiety=anxiety,
+        depression=depression_i,
+        source=source,
+        probabilities=mood.get("probabilities") if isinstance(mood.get("probabilities"), dict) else None,
+    )
+
+
+def run_image_mood_on_match(
+    user, image_bytes: bytes, source: str = "verify_track"
+) -> dict[str, Any] | None:
+    """Background / unlock only — persists FaceMoodScan + daily session metrics."""
+    from .user_ml_policy import user_allows_adult_ml
+
+    if not user_allows_adult_ml(user):
+        return {
+            "skipped": True,
+            "reason": "age_policy",
+            "message": "Mood models are enabled for users over 16 only.",
+        }
     if is_mood_scan_cooldown_active(user):
         return mood_cooldown_skip_payload(user)
     try:
-        mood = analyze_image_bytes(image_bytes)
+        from .dual_model_service import analyze_manual_image
+
+        dual = analyze_manual_image(image_bytes)
+        mood = dual.get("mood") or analyze_image_bytes(image_bytes)
+        depression = dual.get("depression") if isinstance(dual.get("depression"), dict) else None
         row = save_face_mood_scan(
             user,
             mood=mood,
@@ -171,17 +207,39 @@ def run_image_mood_on_match(user, image_bytes: bytes, source: str = "verify_trac
             image_bytes=image_bytes,
             source=source,
         )
-        return _enrich_mood_response(mood, row)
+        _persist_background_metrics(
+            user, mood, source=source, depression=depression, image_bytes=image_bytes
+        )
+        out = _enrich_mood_response(mood, row)
+        if depression:
+            out["depression"] = depression
+        return out
     except Exception as exc:
         logger.exception("Image mood on match failed for user %s: %s", user.id, exc)
         return None
 
 
-def run_video_mood_on_match(user, video_path: str, source: str = "expression_upload") -> dict[str, Any] | None:
+def run_video_mood_on_match(
+    user, video_path: str, source: str = "expression_upload"
+) -> dict[str, Any] | None:
+    from .user_ml_policy import user_allows_adult_ml
+
+    if not user_allows_adult_ml(user):
+        return {
+            "skipped": True,
+            "reason": "age_policy",
+            "message": "Mood models are enabled for users over 16 only.",
+        }
     if is_mood_scan_cooldown_active(user):
         return mood_cooldown_skip_payload(user)
     try:
-        mood = analyze_video_path(video_path)
+        from .dual_model_service import analyze_manual_video
+
+        dual = analyze_manual_video(video_path)
+        mood = dual.get("mood") or analyze_video_path(video_path)
+        if mood.get("error"):
+            return None
+        depression = dual.get("depression") if isinstance(dual.get("depression"), dict) else None
         row = save_face_mood_scan(
             user,
             mood=mood,
@@ -190,7 +248,11 @@ def run_video_mood_on_match(user, video_path: str, source: str = "expression_upl
             video_path=video_path,
             source=source,
         )
-        return _enrich_mood_response(mood, row)
+        _persist_background_metrics(user, mood, source=source, depression=depression)
+        out = _enrich_mood_response(mood, row)
+        if depression:
+            out["depression"] = depression
+        return out
     except Exception as exc:
         logger.exception("Video mood on match failed for user %s: %s", user.id, exc)
         return None

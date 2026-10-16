@@ -601,21 +601,32 @@ class MainActivity : FlutterFragmentActivity() {
                     "getInstalledApps" -> {
                         ioExecutor.execute {
                             val pm = packageManager
-                            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-                            val out = mutableListOf<Map<String, String>>()
-                            for (app in apps) {
-                                // Skip system apps
-                                if ((app.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0 && (app.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0) {
-                                    continue
-                                }
-                                val pkg = app.packageName
-                                val label = app.loadLabel(pm).toString()
-                                out.add(mapOf("package_name" to pkg, "app_label" to label))
-                            }
+                            val out =
+                                InstalledAppsEnumerator.enumerate(
+                                    pm = pm,
+                                    selfPackage = packageName,
+                                    iconForPackage = { pkg ->
+                                        AppIconCache.iconPngBase64(applicationContext, pkg)
+                                    },
+                                )
                             runOnUiThread {
                                 result.success(out)
                             }
                         }
+                    }
+                    "getLocalBlockedPackages" -> {
+                        val blocked = HashSet<String>()
+                        blocked.addAll(TrackerPrefs.homeBlockedPackages(applicationContext))
+                        try {
+                            val obj = org.json.JSONObject(TrackerPrefs.localBlockedPackagesJson(applicationContext))
+                            val keys = obj.keys()
+                            while (keys.hasNext()) {
+                                val k = keys.next()
+                                if (obj.optBoolean(k, false)) blocked.add(k)
+                            }
+                        } catch (_: Exception) {
+                        }
+                        result.success(blocked.toList())
                     }
                     else -> result.notImplemented()
                 }

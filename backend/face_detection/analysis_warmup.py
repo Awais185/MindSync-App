@@ -30,9 +30,9 @@ def status_behavior_models() -> dict[str, bool]:
     emotion = False
     mediapipe = False
     try:
-        from .emotion_models import get_classifier
+        from .adult_emotion_inference import get_adult_emotion_predictor
 
-        get_classifier()
+        get_adult_emotion_predictor()
         emotion = True
     except Exception:
         pass

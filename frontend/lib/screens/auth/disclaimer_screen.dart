@@ -16,6 +16,30 @@ class DisclaimerScreen extends StatefulWidget {
 class _DisclaimerScreenState extends State<DisclaimerScreen> {
   bool _agreed = false;
 
+  static const _points = <_DisclaimerPoint>[
+    _DisclaimerPoint(
+      icon: Icons.psychology_outlined,
+      title: 'AI-Powered Insights',
+      body:
+          'MindSync analyzes your behavioral patterns using AI to surface '
+          'wellness insights. Results may not always be fully accurate.',
+    ),
+    _DisclaimerPoint(
+      icon: Icons.health_and_safety_outlined,
+      title: 'Not a Medical Tool',
+      body:
+          'MindSync does not provide medical advice, diagnosis, or treatment. '
+          'It supports self-awareness only.',
+    ),
+    _DisclaimerPoint(
+      icon: Icons.support_agent_outlined,
+      title: 'Seek Professional Help',
+      body:
+          'For any mental health concerns, please consult a qualified '
+          'healthcare professional.',
+    ),
+  ];
+
   @override
   Widget build(BuildContext context) {
     final publicService = AppPublicService.instance;
@@ -28,80 +52,71 @@ class _DisclaimerScreenState extends State<DisclaimerScreen> {
             child: ConstrainedBox(
               constraints: BoxConstraints(minHeight: constraints.maxHeight),
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
                 child: Column(
                   children: [
-                    const SizedBox(height: 4),
-
+                    // ---- Logo ----
                     const SizedBox(
-                      height: 100,
-                      width: 150,
-                      child: MindSyncLogo(height: 90, width: 140),
+                      height: 80,
+                      width: 130,
+                      child: MindSyncLogo(height: 70, width: 120),
                     ),
+                    const SizedBox(height: 6),
 
-                    const SizedBox(height: 10),
-
+                    // ---- Tagline ----
                     ValueListenableBuilder<AppBrandingData>(
                       valueListenable: publicService.branding,
                       builder: (context, branding, _) => Text(
                         branding.welcomeTagline,
+                        textAlign: TextAlign.center,
                         style: const TextStyle(
-                          fontSize: 16,
+                          fontSize: 14,
                           color: Color(0xFF686A76),
                           fontWeight: FontWeight.w500,
                         ),
                       ),
                     ),
 
-                    const SizedBox(height: 28),
+                    const SizedBox(height: 20),
 
-                    Container(
-                      width: 60,
-                      height: 5,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFD9D7E4),
-                        borderRadius: BorderRadius.circular(3),
-                      ),
-                    ),
-
-                    const SizedBox(height: 24),
-
+                    // ---- Title ----
                     const Text(
                       'Before you begin',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w900,
                         color: Color(0xFF1F2330),
-                        height: 1.2,
+                        height: 1.15,
+                        letterSpacing: -0.4,
                       ),
                     ),
-
-                    const SizedBox(height: 8),
-
+                    const SizedBox(height: 6),
                     const Text(
-                      'Please read and acknowledge this important notice',
+                      'A quick note on how MindSync works',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 14,
+                        fontSize: 13.5,
                         color: Color(0xFF686A76),
                         fontWeight: FontWeight.w500,
                       ),
                     ),
 
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 22),
 
+                    // ---- Disclaimer card with icon points ----
                     Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.all(24),
+                      padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
                       decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.9),
-                        borderRadius: BorderRadius.circular(32),
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(28),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.04),
-                            blurRadius: 20,
-                            offset: const Offset(0, 8),
+                            color: const Color(0xFF6F39E8)
+                                .withValues(alpha: 0.08),
+                            blurRadius: 24,
+                            offset: const Offset(0, 10),
                           ),
                         ],
                       ),
@@ -111,23 +126,23 @@ class _DisclaimerScreenState extends State<DisclaimerScreen> {
                           Row(
                             children: [
                               Container(
-                                width: 28,
-                                height: 28,
+                                width: 30,
+                                height: 30,
                                 decoration: BoxDecoration(
                                   color: const Color(0xFFF3E8FF),
-                                  borderRadius: BorderRadius.circular(8),
+                                  borderRadius: BorderRadius.circular(9),
                                 ),
                                 child: const Icon(
                                   Icons.info_outline_rounded,
                                   color: Color(0xFF6F39E8),
-                                  size: 16,
+                                  size: 17,
                                 ),
                               ),
                               const SizedBox(width: 10),
                               const Text(
                                 'IMPORTANT DISCLAIMER',
                                 style: TextStyle(
-                                  letterSpacing: 1.2,
+                                  letterSpacing: 1.1,
                                   fontWeight: FontWeight.w800,
                                   fontSize: 11,
                                   color: Color(0xFF6F39E8),
@@ -135,79 +150,39 @@ class _DisclaimerScreenState extends State<DisclaimerScreen> {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 18),
-                          const Text(
-                            'MindSync uses AI to analyze behavioral patterns and provide '
-                            'mental wellness insights. The results are generated by machine '
-                            'learning models and, although designed for high accuracy, they '
-                            'may not always be accurate or complete.',
-                            style: TextStyle(
-                              fontSize: 15,
-                              height: 1.5,
-                              color: Color(0xFF2B2D39),
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
                           const SizedBox(height: 16),
-                          Text.rich(
-                            TextSpan(
-                              style: const TextStyle(
-                                fontSize: 15,
-                                height: 1.5,
-                                color: Color(0xFF2B2D39),
-                                fontWeight: FontWeight.w500,
+                          ...List.generate(_points.length, (i) {
+                            return Padding(
+                              padding: EdgeInsets.only(
+                                bottom: i == _points.length - 1 ? 0 : 14,
                               ),
-                              children: const [
-                                TextSpan(text: 'MindSync is '),
-                                TextSpan(
-                                  text: 'not a medical or diagnostic tool',
-                                  style: TextStyle(fontWeight: FontWeight.w800),
-                                ),
-                                TextSpan(
-                                  text:
-                                      ' and does not provide professional medical advice, '
-                                      'diagnosis, or treatment. If you have concerns about '
-                                      'your mental health, please consult a qualified '
-                                      'healthcare professional.',
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          const Text(
-                            'By continuing, you acknowledge that MindSync\'s insights are '
-                            'intended to support self-awareness and should not replace '
-                            'professional judgment.',
-                            style: TextStyle(
-                              fontSize: 15,
-                              height: 1.5,
-                              color: Color(0xFF2B2D39),
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
+                              child: _pointRow(_points[i]),
+                            );
+                          }),
                         ],
                       ),
                     ),
 
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 16),
 
+                    // ---- Compact agree checkbox ----
                     Material(
                       color: Colors.white.withValues(alpha: 0.85),
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(18),
                       child: InkWell(
                         onTap: () => setState(() => _agreed = !_agreed),
-                        borderRadius: BorderRadius.circular(20),
+                        borderRadius: BorderRadius.circular(18),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 14,
+                            horizontal: 14,
+                            vertical: 12,
                           ),
                           child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
                               SizedBox(
-                                width: 24,
-                                height: 24,
+                                width: 22,
+                                height: 22,
                                 child: Checkbox(
                                   value: _agreed,
                                   onChanged: (value) {
@@ -223,14 +198,13 @@ class _DisclaimerScreenState extends State<DisclaimerScreen> {
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 12),
+                              const SizedBox(width: 10),
                               const Expanded(
                                 child: Text(
-                                  'I have read and agree to the disclaimer above. '
-                                  'I understand that MindSync insights are informational only.',
+                                  'I understand and agree to the disclaimer above.',
                                   style: TextStyle(
-                                    fontSize: 14,
-                                    height: 1.45,
+                                    fontSize: 13.5,
+                                    height: 1.35,
                                     color: Color(0xFF2B2D39),
                                     fontWeight: FontWeight.w600,
                                   ),
@@ -242,11 +216,12 @@ class _DisclaimerScreenState extends State<DisclaimerScreen> {
                       ),
                     ),
 
-                    const SizedBox(height: 28),
+                    const SizedBox(height: 22),
 
+                    // ---- Primary button ----
                     SizedBox(
                       width: double.infinity,
-                      height: 60,
+                      height: 56,
                       child: ElevatedButton(
                         onPressed: _agreed ? widget.onAccepted : null,
                         style: ElevatedButton.styleFrom(
@@ -265,19 +240,19 @@ class _DisclaimerScreenState extends State<DisclaimerScreen> {
                             Text(
                               'Get Started',
                               style: TextStyle(
-                                fontSize: 17,
+                                fontSize: 16,
                                 fontWeight: FontWeight.w800,
-                                letterSpacing: 0.5,
+                                letterSpacing: 0.4,
                               ),
                             ),
-                            SizedBox(width: 12),
+                            SizedBox(width: 10),
                             Icon(Icons.arrow_forward_rounded, size: 20),
                           ],
                         ),
                       ),
                     ),
 
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 8),
                   ],
                 ),
               ),
@@ -287,4 +262,64 @@ class _DisclaimerScreenState extends State<DisclaimerScreen> {
       ),
     );
   }
+
+  Widget _pointRow(_DisclaimerPoint point) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: const Color(0xFFF5F3FF),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(
+            point.icon,
+            size: 17,
+            color: const Color(0xFF6F39E8),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                point.title,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF1F2330),
+                  height: 1.25,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                point.body,
+                style: const TextStyle(
+                  fontSize: 13,
+                  height: 1.4,
+                  color: Color(0xFF5B5E6B),
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DisclaimerPoint {
+  const _DisclaimerPoint({
+    required this.icon,
+    required this.title,
+    required this.body,
+  });
+
+  final IconData icon;
+  final String title;
+  final String body;
 }

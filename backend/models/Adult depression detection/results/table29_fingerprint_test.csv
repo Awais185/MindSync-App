@@ -1,0 +1,5 @@
+class,n_blocks,chance,accuracy_random_frames
+Healthy,10,0.1,0.915
+Mild,14,0.071,0.946
+Moderate,19,0.053,0.911
+Severe,10,0.1,0.955

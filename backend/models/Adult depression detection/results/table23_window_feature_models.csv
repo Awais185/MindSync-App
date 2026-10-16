@@ -1,0 +1,7 @@
+,accuracy,accuracy,balanced_accuracy,balanced_accuracy,macro_f1,macro_f1,mcc,mcc,roc_auc_ovr,roc_auc_ovr
+,mean,std,mean,std,mean,std,mean,std,mean,std
+model,,,,,,,,,,
+LightGBM,0.603,0.0891,0.6577,0.1004,0.5889,0.0974,0.4633,0.1218,0.8412,0.0597
+Logistic Regression,0.7127,0.0843,0.7739,0.0678,0.7363,0.0719,0.5897,0.122,0.89,0.0495
+Random Forest,0.4579,0.062,0.5777,0.0815,0.4271,0.057,0.3569,0.0923,0.7872,0.0829
+XGBoost,0.6853,0.0675,0.7561,0.0556,0.7079,0.0574,0.5692,0.0954,0.8893,0.0455

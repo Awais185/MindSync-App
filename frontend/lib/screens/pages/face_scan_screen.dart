@@ -9,7 +9,6 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import '../../services/feature_permission_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
@@ -18,7 +17,6 @@ import '../../services/plan_access_service.dart';
 import '../../config/api_config.dart';
 import '../../utils/mental_health_severity.dart';
 import '../../widgets/deep_face_analysis_hero.dart';
-import '../../widgets/permission_banner.dart';
 import 'face_scan_record_screen.dart';
 
 /// OpenFace / behavior analyze responses mix lists and maps depending on API version.
@@ -84,6 +82,8 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   Map<String, dynamic>? _result;
   Map<String, dynamic>? _imageMoodResult;
   Map<String, dynamic>? _videoMoodResult;
+  Map<String, dynamic>? _imageDepressionResult;
+  Map<String, dynamic>? _videoDepressionResult;
   bool _loading = false;
   String _stage = 'Preparing...';
   double _progress = 0.0;
@@ -141,12 +141,20 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   }
 
   Future<void> _pickRecordedVideo() async {
+    if (_loading) return;
     final recorded = await Navigator.of(context).push<XFile>(
       MaterialPageRoute(builder: (_) => const FaceScanRecordScreen()),
     );
-    if (recorded == null) return;
+    if (recorded == null || !mounted) return;
     _selectedVideo = recorded;
-    await _initSourceVideoController(recorded);
+    setState(() {
+      _loading = true;
+      _stage = 'Uploading video for analysis…';
+      _result = null;
+      _analyzedVideoUrl = null;
+    });
+    _startProgressAnimation();
+    unawaited(_initSourceVideoController(recorded));
     await _processVideo(scanType: 'recorded');
   }
 
@@ -155,7 +163,14 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     final picked = await _picker.pickVideo(source: ImageSource.gallery);
     if (picked == null || !mounted) return;
     _selectedVideo = picked;
-    await _initSourceVideoController(picked);
+    setState(() {
+      _loading = true;
+      _stage = 'Uploading video for analysis…';
+      _result = null;
+      _analyzedVideoUrl = null;
+    });
+    _startProgressAnimation();
+    unawaited(_initSourceVideoController(picked));
     await _processVideo(scanType: 'uploaded');
   }
 
@@ -258,7 +273,8 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       request.headers['Authorization'] = 'Bearer $token';
       request.fields['source_type'] = 'random_usage';
       request.fields['scan_type'] = scanType;
-      request.fields['fast_mode'] = 'true';
+      request.fields['fast_mode'] = 'false';
+      request.fields['persist'] = 'false';
       request.fields['include_media'] = 'true';
       request.fields['include_deepface_results'] = 'false';
       request.files.add(
@@ -267,11 +283,11 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
       setState(
         () => _stage =
-            'Running face-mesh AU analysis with tracked video…',
+            'OpenFace + depression model + emotion ensemble…',
       );
 
       final streamed = await request.send().timeout(
-        const Duration(seconds: 90),
+        const Duration(seconds: 300),
       );
       final resp = await http.Response.fromStream(streamed);
       final body = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -293,6 +309,8 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                 ? analyzedVideoUrlRaw
                 : '${ApiConfig.baseUrl}$analyzedVideoUrlRaw')
           : null;
+      final moodMap = body['mood'];
+      final depMap = body['depression'];
       if (!mounted) return;
       setState(() {
         _result = body;
@@ -300,6 +318,16 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         _videoController = controller;
         _progress = 1.0;
         _stage = 'Completed';
+        if (moodMap is Map<String, dynamic>) {
+          _videoMoodResult = moodMap;
+        } else if (moodMap is Map) {
+          _videoMoodResult = Map<String, dynamic>.from(moodMap);
+        }
+        if (depMap is Map<String, dynamic>) {
+          _videoDepressionResult = depMap;
+        } else if (depMap is Map) {
+          _videoDepressionResult = Map<String, dynamic>.from(depMap);
+        }
       });
       if (_analyzedVideoUrl != null && _videoController == null) {
         _show(
@@ -337,15 +365,20 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
   Future<bool> _ensureMoodCameraPermission({bool includeMic = false}) async {
     if (kIsWeb) return true;
-    if (!mounted) return false;
-    final camOk = await FeaturePermissionService.ensureCamera(context);
-    if (!camOk) {
+    var cam = await Permission.camera.status;
+    if (!cam.isGranted) {
+      cam = await Permission.camera.request();
+    }
+    if (!cam.isGranted) {
       _show('Camera permission is required for mood capture.');
       return false;
     }
     if (includeMic) {
-      final micOk = await FeaturePermissionService.ensureMicrophone(context);
-      if (!micOk) {
+      var mic = await Permission.microphone.status;
+      if (!mic.isGranted) {
+        mic = await Permission.microphone.request();
+      }
+      if (!mic.isGranted) {
         _show('Microphone permission is required for mood video.');
         return false;
       }
@@ -445,15 +478,21 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         const Duration(seconds: 90),
       );
       final response = await http.Response.fromStream(streamed);
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode < 200 || response.statusCode >= 300) {
+        final hint = (data['detail'] ?? data['error'])?.toString();
         await _scheduleMoodRetryAfterFail();
-        _show('Image mood detection failed.');
+        _show(hint?.isNotEmpty == true ? hint! : 'Image mood detection failed.');
         return;
       }
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      final mood = data['mood'] as Map<String, dynamic>?;
-      if (mood == null || mood.isEmpty) {
-        final hint = (data['message'] ?? data['detail'])?.toString();
+      final moodRaw = data['mood'];
+      final mood = moodRaw is Map<String, dynamic>
+          ? moodRaw
+          : (moodRaw is Map ? Map<String, dynamic>.from(moodRaw) : null);
+      if (mood == null ||
+          (mood.isEmpty && data['error'] == null) ||
+          (mood['error'] != null && mood['prediction'] == null && mood['class'] == null)) {
+        final hint = (data['detail'] ?? data['message'] ?? mood?['detail'])?.toString();
         await _scheduleMoodRetryAfterFail();
         _show(
           hint?.isNotEmpty == true
@@ -462,15 +501,21 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         );
         return;
       }
+      final depression = data['depression'] as Map<String, dynamic>?;
       if (!mounted) return;
       setState(() {
         _imageMoodResult = mood;
+        _imageDepressionResult = depression;
         _progress = 1.0;
       });
       await _applyMoodCapturePause();
-      final msg = (data['message'] ?? mood['prediction'])?.toString();
+      final label =
+          (mood['prediction'] ?? mood['class'])?.toString();
+      final msg = (data['message'] ?? label)?.toString();
       _show(
-        msg?.isNotEmpty == true ? msg! : 'Image mood prediction complete.',
+        msg?.isNotEmpty == true
+            ? msg!
+            : 'Image mood prediction complete (not saved).',
       );
     } catch (_) {
       _show('Unable to run image mood detection.');
@@ -522,9 +567,11 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         );
         return;
       }
+      final depression = data['depression'] as Map<String, dynamic>?;
       if (!mounted) return;
       setState(() {
         _videoMoodResult = mood;
+        _videoDepressionResult = depression;
         _progress = 1.0;
       });
       await _applyMoodCapturePause();
@@ -619,6 +666,20 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                 ),
               ),
             const SizedBox(height: 14),
+            if (result['mood'] is Map) ...[
+              _SimpleMoodResultCard(
+                title: 'Emotion model (video)',
+                payload: Map<String, dynamic>.from(result['mood'] as Map),
+              ),
+              const SizedBox(height: 10),
+            ],
+            if (result['depression'] is Map) ...[
+              _DepressionResultCard(
+                title: 'Depression screening (OpenFace AU)',
+                payload: Map<String, dynamic>.from(result['depression'] as Map),
+              ),
+              const SizedBox(height: 14),
+            ],
             _AnalysisSessionCard(
               dominant: dominant,
               severity: severity,
@@ -657,50 +718,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
             ),
             const SizedBox(height: 18),
           ],
-          const SizedBox(height: 10),
-          FutureBuilder<Map<String, bool>>(
-            future: Future.wait([
-              Permission.camera.isGranted,
-              Permission.microphone.isGranted,
-            ]).then((list) => {
-                  'cam': list[0],
-                  'mic': list[1],
-                }),
-            builder: (context, snap) {
-              final perms = snap.data ?? {'cam': true, 'mic': true};
-              final missing = <Widget>[];
-
-              if (perms['cam'] == false) {
-                missing.add(PermissionBanner(
-                  title: 'Camera Required',
-                  description: 'Camera is needed to record a face scan.',
-                  icon: Icons.camera_alt,
-                  onAllow: () async {
-                    await FeaturePermissionService.ensureCamera(context);
-                    setState(() {});
-                  },
-                ));
-              }
-              if (perms['mic'] == false) {
-                missing.add(PermissionBanner(
-                  title: 'Microphone Required',
-                  description: 'Microphone is needed for video mood recording.',
-                  icon: Icons.mic,
-                  onAllow: () async {
-                    await FeaturePermissionService.ensureMicrophone(context);
-                    setState(() {});
-                  },
-                ));
-              }
-              if (missing.isEmpty) return const SizedBox.shrink();
-              return Column(
-                children: missing.map((e) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: e,
-                )).toList(),
-              );
-            },
-          ),
           if (_loading) ...[
             const SizedBox(height: 18),
             Container(
@@ -763,11 +780,25 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
               payload: _imageMoodResult!,
             ),
           ],
+          if (_imageDepressionResult != null) ...[
+            const SizedBox(height: 8),
+            _DepressionResultCard(
+              title: 'Image Depression Screening',
+              payload: _imageDepressionResult!,
+            ),
+          ],
           if (_videoMoodResult != null) ...[
             const SizedBox(height: 8),
             _SimpleMoodResultCard(
               title: 'Video Mood Result',
               payload: _videoMoodResult!,
+            ),
+          ],
+          if (_videoDepressionResult != null) ...[
+            const SizedBox(height: 8),
+            _DepressionResultCard(
+              title: 'Video Depression Screening',
+              payload: _videoDepressionResult!,
             ),
           ],
         ],
@@ -1192,6 +1223,58 @@ class _AusCard extends StatelessWidget {
               child: Text('$name  • intensity: $intensity$extra'),
             );
           }),
+        ],
+      ),
+    );
+  }
+}
+
+class _DepressionResultCard extends StatelessWidget {
+  const _DepressionResultCard({required this.title, required this.payload});
+
+  final String title;
+  final Map<String, dynamic> payload;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = (payload['predicted_label'] ?? '—').toString();
+    final score = payload['depression_score'];
+    final probs = payload['average_class_probabilities_percent'];
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE4E6EE)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          Text('Screening class: $label'),
+          if (score != null) ...[
+            const SizedBox(height: 4),
+            Text('Depression index: $score'),
+          ],
+          if (probs is Map) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Class probabilities (%)',
+              style: TextStyle(fontSize: 12, color: Color(0xFF6E7381)),
+            ),
+            ...probs.entries.map(
+              (e) => Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text('${e.key}: ${e.value}'),
+              ),
+            ),
+          ],
+          const SizedBox(height: 6),
+          const Text(
+            'Research estimate only — not a clinical diagnosis.',
+            style: TextStyle(fontSize: 11, color: Color(0xFF6E7381)),
+          ),
         ],
       ),
     );

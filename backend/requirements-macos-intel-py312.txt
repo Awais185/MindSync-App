@@ -20,6 +20,7 @@ scikit-learn>=1.5,<1.6
 transformers>=4.36,<5
 torch==2.2.2
 torchvision==0.17.2
+timm>=0.9,<2
 # Reliable face identity (optional but strongly recommended):
 # pip install -r requirements-face-insight.txt
 # Deep face scan video (mesh landmarks + AU overlay):

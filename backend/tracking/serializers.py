@@ -14,10 +14,21 @@ class ScreenTimeUpdateSerializer(serializers.Serializer):
     total_screen_time = serializers.IntegerField(min_value=0, required=False)
     social_media_time = serializers.IntegerField(min_value=0, required=False)
     video_watch_time = serializers.IntegerField(min_value=0, required=False)
-    mode = serializers.ChoiceField(choices=('delta', 'absolute'), default='delta')
+    sleep_time = serializers.IntegerField(min_value=0, required=False)
+    late_night_activity = serializers.IntegerField(min_value=0, required=False)
+    mode = serializers.ChoiceField(
+        choices=('delta', 'absolute', 'sleep_absolute'),
+        default='delta',
+    )
 
     def validate(self, attrs):
         mode = attrs.get('mode', 'delta')
+        if mode == 'sleep_absolute':
+            if attrs.get('sleep_time') is None and attrs.get('late_night_activity') is None:
+                raise serializers.ValidationError(
+                    'For mode=sleep_absolute, provide sleep_time and/or late_night_activity (seconds).'
+                )
+            return attrs
         if mode == 'delta':
             if not any(
                 k in attrs and attrs[k] is not None

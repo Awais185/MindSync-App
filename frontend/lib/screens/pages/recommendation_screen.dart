@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../services/plan_access_service.dart';
 import '../../services/recommendations_service.dart';
-import '../../ui/components/mind_sync_header.dart';
+import '../../ui/components/mindsync_app_header.dart';
 import '../../ui/layout/mindsync_layout.dart';
 import 'profile_screen.dart';
 import '../main_shell_screen.dart';
@@ -52,13 +52,8 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
         child: ListView(
           padding: MindSyncLayout.pagePadding(context, top: 16, bottom: 100),
           children: [
-            MindSyncHeader(
+            MindSyncAppHeader(
               onBack: () => Navigator.of(context).pop(),
-              onProfileTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                );
-              },
             ),
             const SizedBox(height: 20),
 

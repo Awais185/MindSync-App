@@ -53,7 +53,25 @@ def _merge_apps_for_user(user: User):
         category = 'Other'
         if any(x in pkg_lower for x in ['tiktok', 'instagram', 'facebook', 'twitter', 'snapchat', 'youtube', 'whatsapp', 'telegram', 'discord', 'musically', 'trill']):
             category = 'Social Media'
-        elif any(x in pkg_lower for x in ['game', 'pubg', 'roblox', 'minecraft', 'candycrush', 'supercell']):
+        elif any(
+            x in pkg_lower
+            for x in [
+                'game',
+                'pubg',
+                'roblox',
+                'minecraft',
+                'candycrush',
+                'supercell',
+                'freefire',
+                'garena',
+                'activision',
+                'epicgames',
+                'riotgames',
+                'callofduty',
+                'bgmi',
+                'dts.',
+            ]
+        ):
             category = 'Games'
         elif any(x in pkg_lower for x in ['netflix', 'hulu', 'disney', 'primevideo', 'hbo']):
             category = 'Entertainment'

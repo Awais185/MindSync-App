@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import '../pages/profile_screen.dart';
 import '../../services/dns_filter_service.dart';
 import '../../services/parental_control_service.dart';
 import '../../services/local_auth_service.dart';
@@ -11,9 +10,6 @@ import '../../services/feature_permission_service.dart';
 import '../../services/screen_time_service.dart';
 import '../../services/social_media_usage_limit_store.dart';
 import '../../utils/social_app_branding.dart';
-import '../../ui/components/mind_sync_header.dart';
-import '../../ui/layout/mindsync_layout.dart';
-import '../../widgets/permission_banner.dart';
 
 class ParentScreen extends StatefulWidget {
   const ParentScreen({super.key});
@@ -30,32 +26,25 @@ class _ParentScreenState extends State<ParentScreen>
   bool _loadingApps = false;
   bool _loadingUser = false;
   String _displayName = 'User';
-  String? _faceImageUrl;
+  String _onlineStatus = 'Online Now';
   int _socialLimitMinutes = 90;
   int _gamingLimitMinutes = 60;
   int _entertainmentLimitMinutes = 120;
   List<ParentalAppRule> _rules = const [];
-  final Map<String, int> _appSocialLimits = {};
   bool _loadingContentMonitor = false;
   ParentContentMonitorSnapshot _contentMonitor =
       ParentContentMonitorSnapshot.empty;
 
-  // Permissions state
-  bool _hasAccessibility = true;
-  bool _hasOverlay = true;
+  // Bedtime schedule (visual state)
+  TimeOfDay _sleepHour = const TimeOfDay(hour: 21, minute: 30);
+  TimeOfDay _wakeUp = const TimeOfDay(hour: 7, minute: 0);
 
-  // Content Restrictions — default unblocked (DNS + time limits off)
+  // Content Restrictions — default unblocked
   bool socialMediaLimit = false;
   bool gamingLimit = false;
   bool entertainmentLimit = false;
 
-  // App Restrictions switches
-  bool tiktokLimit = true;
-  bool youtubeLimit = true;
-  bool robloxLimit = false;
-  bool instagramLimit = true;
-
-  // Safety Controls — default off
+  // Safety Controls
   bool safeSearchActive = false;
   bool blockAdultContent = false;
   DnsFilterStatus _dnsStatus = DnsFilterStatus.empty;
@@ -64,7 +53,6 @@ class _ParentScreenState extends State<ParentScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _checkPermissions();
     _initWithPlanCheck();
   }
 
@@ -77,18 +65,14 @@ class _ParentScreenState extends State<ParentScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _checkPermissions();
+      unawaited(_recheckPermissionsSilent());
+      unawaited(_loadParentRules());
     }
   }
 
-  Future<void> _checkPermissions() async {
-    final acc = await ScreenTimeService.instance.hasAccessibilityService();
-    final ovl = await ScreenTimeService.instance.hasOverlayPermission();
-    if (!mounted) return;
-    setState(() {
-      _hasAccessibility = acc;
-      _hasOverlay = ovl;
-    });
+  Future<void> _recheckPermissionsSilent() async {
+    await ScreenTimeService.instance.hasAccessibilityService();
+    await ScreenTimeService.instance.hasOverlayPermission();
   }
 
   Future<void> _initWithPlanCheck() async {
@@ -148,7 +132,13 @@ class _ParentScreenState extends State<ParentScreen>
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('VPN permission required'),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(24),
+        ),
+        title: const Text(
+          'VPN permission required',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
         content: const Text(
           'DNS-based content filtering needs MindSync to run a local VPN that '
           'only intercepts DNS traffic. Android shows this as a VPN connection — '
@@ -159,12 +149,43 @@ class _ParentScreenState extends State<ParentScreen>
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('OK'),
+            child: const Text(
+              'OK',
+              style: TextStyle(
+                color: Color(0xFF6F39E8),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
           ),
         ],
       ),
     );
     return false;
+  }
+
+  /// Usage access, accessibility, and overlay — required before blocking an app.
+  Future<bool> _ensureBlockingPermissions() async {
+    final usage = await ScreenTimeService.instance.hasUsageAccess();
+    if (!usage) {
+      if (!mounted) return false;
+      await FeaturePermissionService.ensureUsageAccess(context);
+      if (!await ScreenTimeService.instance.hasUsageAccess()) return false;
+    }
+    final acc = await ScreenTimeService.instance.hasAccessibilityService();
+    if (!acc) {
+      if (!mounted) return false;
+      await FeaturePermissionService.ensureAccessibility(context);
+      final acc2 = await ScreenTimeService.instance.hasAccessibilityService();
+      if (!acc2) return false;
+    }
+    final ovl = await ScreenTimeService.instance.hasOverlayPermission();
+    if (!ovl) {
+      if (!mounted) return false;
+      await FeaturePermissionService.ensureOverlay(context);
+      final ovl2 = await ScreenTimeService.instance.hasOverlayPermission();
+      if (!ovl2) return false;
+    }
+    return true;
   }
 
   Future<void> _syncDnsFilter() async {
@@ -229,7 +250,7 @@ class _ParentScreenState extends State<ParentScreen>
       _displayName = profile?.fullName.isNotEmpty == true
           ? profile!.fullName
           : (profile?.displayName ?? 'User');
-      _faceImageUrl = profile?.faceImage;
+      _onlineStatus = 'Online Now';
       _loadingUser = false;
     });
   }
@@ -240,26 +261,46 @@ class _ParentScreenState extends State<ParentScreen>
     if (!mounted) return;
     setState(() {
       _rules = rules;
-      for (final rule in rules) {
-        _appSocialLimits.putIfAbsent(
-          rule.packageName,
-          () => _socialLimitMinutes,
-        );
-      }
       _loadingApps = false;
     });
   }
 
   Future<void> _toggleApp(String packageName, bool blocked) async {
+    // If blocking (not unblocking), ensure the mandatory permissions first.
+    if (blocked) {
+      final ok = await _ensureBlockingPermissions();
+      if (!ok) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Enable Usage Access, Accessibility, and Overlay to block apps.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+    }
+
     final previousRules = _rules;
+    final aliases = ParentalControlService.expandBlockedAliases(packageName);
+    var appLabel = packageName;
+    for (final r in _rules) {
+      if (r.packageName == packageName) {
+        appLabel = r.appLabel;
+        break;
+      }
+    }
     setState(() {
       _rules = _rules
           .map(
-            (r) => r.packageName == packageName
+            (r) => aliases.contains(r.packageName)
                 ? ParentalAppRule(
                     packageName: r.packageName,
                     appLabel: r.appLabel,
                     blocked: blocked,
+                    category: r.category,
                   )
                 : r,
           )
@@ -279,6 +320,18 @@ class _ParentScreenState extends State<ParentScreen>
       return;
     }
     await _loadParentRules();
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          blocked
+              ? '$appLabel is blocked'
+              : '$appLabel is unblocked',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Future<void> _applyPolicy({bool enableEnforcement = true}) async {
@@ -301,16 +354,36 @@ class _ParentScreenState extends State<ParentScreen>
     final value = await showDialog<int>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('$title Limit (minutes)'),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(24),
+        ),
+        title: Text(
+          '$title Limit',
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
         content: TextField(
           controller: controller,
           keyboardType: TextInputType.number,
-          decoration: const InputDecoration(hintText: 'Enter minutes'),
+          decoration: InputDecoration(
+            hintText: 'Enter minutes',
+            filled: true,
+            fillColor: const Color(0xFFF5F3FC),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: BorderSide.none,
+            ),
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(
+                color: Color(0xFF6B6D79),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
           ),
           ElevatedButton(
             onPressed: () {
@@ -318,7 +391,17 @@ class _ParentScreenState extends State<ParentScreen>
               if (parsed == null || parsed <= 0) return;
               Navigator.of(dialogContext).pop(parsed);
             },
-            child: const Text('Save'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF6F39E8),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+            ),
+            child: const Text(
+              'Save',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
           ),
         ],
       ),
@@ -328,141 +411,104 @@ class _ParentScreenState extends State<ParentScreen>
     await _applyPolicy();
   }
 
+  Future<void> _editBedtimeSchedule() async {
+    final sleep = await showTimePicker(
+      context: context,
+      initialTime: _sleepHour,
+      helpText: 'Select sleep hour',
+    );
+    if (sleep == null || !mounted) return;
+    final wake = await showTimePicker(
+      context: context,
+      initialTime: _wakeUp,
+      helpText: 'Select wake-up time',
+    );
+    if (wake == null || !mounted) return;
+    setState(() {
+      _sleepHour = sleep;
+      _wakeUp = wake;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FC),
+      backgroundColor: const Color(0xFFF3F1FB),
       body: SafeArea(
+        top: false,
         child: ListView(
-          padding: MindSyncLayout.pagePadding(context, top: 10, bottom: 100),
+          padding: const EdgeInsets.fromLTRB(18, 14, 18, 100),
           children: [
-            MindSyncHeader(
-              onProfileTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                );
-              },
-              profileAvatarImageUrl: _faceImageUrl,
+            // LIVE PROTECTION pill
+            Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 5,
+              ),
+              decoration: BoxDecoration(
+                color: const Color(0xFFDCFCE7),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: const [
+                  Icon(
+                    Icons.circle,
+                    size: 8,
+                    color: Color(0xFF22C55E),
+                  ),
+                  SizedBox(width: 6),
+                  Text(
+                    'LIVE PROTECTION · ACTIVE',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF15803D),
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // User strip (API data: name + status)
+            _UserStrip(
+              userName: _loadingUser ? 'Loading...' : _displayName,
+              status: _onlineStatus,
+            ),
+            const SizedBox(height: 18),
+
+            // Usage Health card
+            _UsageHealthCard(
+              userName: _loadingUser ? 'User' : _displayName,
             ),
             const SizedBox(height: 16),
 
-            // LIVE PROTECTION label
-            const Text(
-              'LIVE PROTECTION',
-              style: TextStyle(
-                fontSize: 12,
-                letterSpacing: 1.5,
-                color: Color(0xFFA1A1AA),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 6),
-
-            // Title
-            const Text(
-              'Parent Control',
-              style: TextStyle(
-                fontSize: 30,
-                fontWeight: FontWeight.w800,
-                height: 1.1,
-                color: Color(0xFF18181B),
-              ),
-            ),
-            const SizedBox(height: 14),
-
-            // User Strip
-            _UserStrip(userName: _loadingUser ? 'Loading...' : _displayName),
-            const SizedBox(height: 20),
-
-            if (!_hasAccessibility) ...[
-              PermissionBanner(
-                title: 'Accessibility Required',
-                description:
-                    'Parent controls need accessibility service to enforce app restrictions.',
-                icon: Icons.accessibility_new,
-                onAllow: () async {
-                  await FeaturePermissionService.ensureAccessibility(context);
-                },
-              ),
-              const SizedBox(height: 20),
-            ],
-
-            if (!_hasOverlay) ...[
-              PermissionBanner(
-                title: 'Overlay Required',
-                description:
-                    'MindSync needs "Display over other apps" permission to block restricted apps.',
-                icon: Icons.layers,
-                onAllow: () async {
-                  await FeaturePermissionService.ensureOverlay(context);
-                },
-              ),
-              const SizedBox(height: 20),
-            ],
-
-            // Usage Health Card
-            _UsageHealthCard(userName: _loadingUser ? 'User' : _displayName),
-            const SizedBox(height: 20),
-
-            // Content Monitor Card
+            // Content Monitor card
             _ContentMonitorCard(
               loading: _loadingContentMonitor,
               snapshot: _contentMonitor,
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
 
-            // Content Time Restrictions Card
-            _ContentTimeCard(
-              socialMediaLimit: socialMediaLimit,
-              gamingLimit: gamingLimit,
-              entertainmentLimit: entertainmentLimit,
-              socialLimitMinutes: _socialLimitMinutes,
-              gamingLimitMinutes: _gamingLimitMinutes,
-              entertainmentLimitMinutes: _entertainmentLimitMinutes,
-              socialDnsStatus: _dnsStatus.socialStatus,
-              gamingDnsStatus: _dnsStatus.gamingStatus,
-              entertainmentDnsStatus: _dnsStatus.entertainmentStatus,
-              onChangeSocialLimit: () => _changeLimit(
-                title: 'Social Media',
-                current: _socialLimitMinutes,
-                onSave: (v) => setState(() => _socialLimitMinutes = v),
-              ),
-              onChangeGamingLimit: () => _changeLimit(
-                title: 'Gaming',
-                current: _gamingLimitMinutes,
-                onSave: (v) => setState(() => _gamingLimitMinutes = v),
-              ),
-              onChangeEntertainmentLimit: () => _changeLimit(
-                title: 'Entertainment',
-                current: _entertainmentLimitMinutes,
-                onSave: (v) => setState(() => _entertainmentLimitMinutes = v),
-              ),
-              onSocialChanged: _onSocialCategoryChanged,
-              onGamingChanged: _onGamingCategoryChanged,
-              onEntertainmentChanged: _onEntertainmentCategoryChanged,
-            ),
-            const SizedBox(height: 20),
-
-            // App Restrictions Card
+            // App Restrictions card
             _AppRestrictionsCard(
               loading: _loadingApps,
               rules: _rules,
               onRuleChanged: _toggleApp,
-              appLimits: _appSocialLimits,
-              onEditLimit: (rule) => _changeLimit(
-                title: rule.appLabel,
-                current:
-                    _appSocialLimits[rule.packageName] ?? _socialLimitMinutes,
-                onSave: (v) {
-                  setState(() {
-                    _appSocialLimits[rule.packageName] = v;
-                  });
-                },
-              ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
 
-            // Safety Controls Card
+            // Bedtime Schedule card
+            _BedtimeScheduleCard(
+              sleepHour: _sleepHour,
+              wakeUp: _wakeUp,
+              onEdit: _editBedtimeSchedule,
+            ),
+            const SizedBox(height: 16),
+
+            // Safety Controls card
             _SafetyControlsCard(
               safeSearchActive: safeSearchActive,
               blockAdultContent: blockAdultContent,
@@ -473,6 +519,7 @@ class _ParentScreenState extends State<ParentScreen>
               onSafeSearchChanged: _onSafeSearchChanged,
               onAdultBlockChanged: _onAdultBlockChanged,
             ),
+            const SizedBox(height: 20),
           ],
         ),
       ),
@@ -480,63 +527,83 @@ class _ParentScreenState extends State<ParentScreen>
   }
 }
 
-// User Strip Widget
-class _UserStrip extends StatelessWidget {
-  const _UserStrip({required this.userName});
+// ---------------------------------------------------------------------------
+// User strip — shows API name + status
+// ---------------------------------------------------------------------------
 
+class _UserStrip extends StatelessWidget {
+  const _UserStrip({required this.userName, required this.status});
   final String userName;
+  final String status;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: _cardDecoration(),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          const CircleAvatar(
-            radius: 16,
-            backgroundColor: Color(0xFFE8D8CA),
-            child: Icon(Icons.person, size: 16, color: Color(0xFF7A5036)),
-          ),
-          const SizedBox(width: 10),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          Stack(
+            alignment: Alignment.bottomRight,
             children: [
-              Text(
-                userName,
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF18181B),
+              const CircleAvatar(
+                radius: 20,
+                backgroundColor: Color(0xFFF5F3FC),
+                child: Icon(
+                  Icons.person,
+                  size: 20,
+                  color: Color(0xFF6F39E8),
                 ),
               ),
-              const SizedBox(height: 2),
-              const Row(
-                children: [
-                  Icon(Icons.circle, size: 6, color: Color(0xFF22C55E)),
-                  SizedBox(width: 4),
-                  Text(
-                    'Online Now',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Color(0xFF71717A),
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
+              Container(
+                padding: const EdgeInsets.all(2),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF22C55E),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.check, size: 10, color: Colors.white),
               ),
             ],
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  userName,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF18181B),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  status,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF22C55E),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F3FC),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Text(
+              'iOS 17.4',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF6F39E8),
+              ),
+            ),
           ),
         ],
       ),
@@ -544,10 +611,12 @@ class _UserStrip extends StatelessWidget {
   }
 }
 
-// Usage Health Card with Ring — editable social media limit (12 h expiry)
+// ---------------------------------------------------------------------------
+// Usage Health card
+// ---------------------------------------------------------------------------
+
 class _UsageHealthCard extends StatefulWidget {
   const _UsageHealthCard({required this.userName});
-
   final String userName;
 
   @override
@@ -593,79 +662,199 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
     var hours = (currentLimitMinutes ?? 120) ~/ 60;
     var minutes = (currentLimitMinutes ?? 120) % 60;
 
-    final result = await showDialog<int?>(
+    final result = await showModalBottomSheet<int?>(
       context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (ctx) {
         return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Social media daily limit'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Applies to social apps only (same as App Usage). '
-                    'Limit expires 12 hours after you save it.',
-                    style: TextStyle(fontSize: 12, color: Color(0xFF71717A)),
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(ctx).viewInsets.bottom,
+              ),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.vertical(
+                    top: Radius.circular(28),
                   ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: DropdownButtonFormField<int>(
-                          value: hours.clamp(0, 12),
-                          decoration: const InputDecoration(labelText: 'Hours'),
-                          items: List.generate(
-                            13,
-                            (i) =>
-                                DropdownMenuItem(value: i, child: Text('$i h')),
-                          ),
-                          onChanged: (v) =>
-                              setDialogState(() => hours = v ?? hours),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Drag handle
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE5E4EE),
+                          borderRadius: BorderRadius.circular(2),
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: DropdownButtonFormField<int>(
-                          value: (minutes ~/ 5) * 5,
-                          decoration: const InputDecoration(
-                            labelText: 'Minutes',
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF3F1FB),
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                          items: List.generate(
-                            12,
-                            (i) => DropdownMenuItem(
-                              value: i * 5,
-                              child: Text('${i * 5} m'),
+                          child: const Icon(
+                            Icons.timer_outlined,
+                            size: 20,
+                            color: Color(0xFF6F39E8),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            'Set Usage Limit',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF18181B),
+                              letterSpacing: -0.3,
                             ),
                           ),
-                          onChanged: (v) =>
-                              setDialogState(() => minutes = v ?? minutes),
                         ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Applies to social apps only. Limit expires 12 hours after you save it.',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: Color(0xFF71717A),
+                        height: 1.4,
                       ),
-                    ],
-                  ),
-                ],
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _DurationPicker(
+                            label: 'HOURS',
+                            value: hours.clamp(0, 12),
+                            max: 12,
+                            onChanged: (v) =>
+                                setModalState(() => hours = v),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _DurationPicker(
+                            label: 'MINUTES',
+                            value: (minutes ~/ 5) * 5,
+                            max: 11,
+                            step: 5,
+                            onChanged: (v) =>
+                                setModalState(() => minutes = v),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    // Live preview pill
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF3F1FB),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.schedule_rounded,
+                            size: 18,
+                            color: Color(0xFF6F39E8),
+                          ),
+                          const SizedBox(width: 10),
+                          const Text(
+                            'New limit:',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF6B6E7A),
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            _formatMinutes(hours * 60 + minutes),
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF6F39E8),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        if (currentLimitMinutes != null)
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.of(ctx).pop(0),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xFFE53935),
+                                side: const BorderSide(
+                                  color: Color(0xFFFCA5A5),
+                                  width: 1.4,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 14),
+                              ),
+                              child: const Text(
+                                'Remove',
+                                style: TextStyle(fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                          ),
+                        if (currentLimitMinutes != null)
+                          const SizedBox(width: 10),
+                        Expanded(
+                          flex: 2,
+                          child: ElevatedButton(
+                            onPressed: () {
+                              final total = hours * 60 + minutes;
+                              if (total <= 0) return;
+                              Navigator.of(ctx).pop(total);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF6F39E8),
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            child: const Text(
+                              'Save Limit',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(null),
-                  child: const Text('Cancel'),
-                ),
-                if (currentLimitMinutes != null)
-                  TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(0),
-                    child: const Text('Remove limit'),
-                  ),
-                FilledButton(
-                  onPressed: () {
-                    final total = hours * 60 + minutes;
-                    if (total <= 0) return;
-                    Navigator.of(ctx).pop(total);
-                  },
-                  child: const Text('Save'),
-                ),
-              ],
             );
           },
         );
@@ -682,7 +871,7 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Social media limit set to ${_formatMinutes(result)} (expires in 12h)',
+          'Limit set to ${_formatMinutes(result)} (expires in 12h)',
         ),
         behavior: SnackBarBehavior.floating,
       ),
@@ -706,20 +895,12 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
                 ? (usedMinutes / activeLimit).clamp(0.0, 1.0)
                 : 0.0;
             final pct = (progress * 100).round();
+            final remaining =
+                hasLimit ? (activeLimit - usedMinutes).clamp(0, activeLimit) : 0;
 
             return Container(
               padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(28),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.02),
-                    blurRadius: 10,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
+              decoration: _sectionDecoration(),
               child: Column(
                 children: [
                   if (limitState.showExpiredIndicator) ...[
@@ -745,7 +926,7 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
                           const SizedBox(width: 8),
                           const Expanded(
                             child: Text(
-                              'Limit expired — no active social media cap',
+                              'Limit expired — no active cap',
                               style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.w600,
@@ -756,7 +937,8 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
                           TextButton(
                             onPressed: () {
                               unawaited(
-                                SocialMediaUsageLimitStore.clearExpiredIndicator(),
+                                SocialMediaUsageLimitStore
+                                    .clearExpiredIndicator(),
                               );
                             },
                             child: const Text('Dismiss'),
@@ -814,17 +996,18 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
                   const SizedBox(height: 4),
                   Text(
                     hasLimit
-                        ? '${widget.userName} is $pct% through the social media allowance.'
-                        : 'Set a temporary social media daily limit (social apps only).',
+                        ? '${widget.userName} is $pct% of daily allowance. ${_formatMinutes(remaining)} balance remaining.'
+                        : 'Set a temporary usage limit for social apps.',
                     textAlign: TextAlign.center,
                     style: const TextStyle(
-                      fontSize: 11,
-                      color: Color(0xFFA1A1AA),
+                      fontSize: 11.5,
+                      color: Color(0xFF8A8D99),
                       fontWeight: FontWeight.w500,
+                      height: 1.4,
                     ),
                   ),
                   if (hasLimit) ...[
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 6),
                     Text(
                       formatUsageHealthCountdown(limitState.remaining),
                       style: const TextStyle(
@@ -834,17 +1017,33 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
                       ),
                     ),
                   ],
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 16),
                   SizedBox(
                     width: double.infinity,
-                    child: OutlinedButton.icon(
+                    height: 46,
+                    child: ElevatedButton.icon(
                       onPressed: () =>
                           _pickAndSaveLimit(hasLimit ? activeLimit : null),
-                      icon: const Icon(Icons.edit_calendar, size: 18),
+                      icon: Icon(
+                        hasLimit ? Icons.edit_calendar : Icons.add_alarm,
+                        size: 18,
+                      ),
                       label: Text(
                         hasLimit
-                            ? 'Edit social limit (${_formatMinutes(activeLimit)})'
-                            : 'Set social media limit',
+                            ? 'Edit Usage Limit (${_formatMinutes(activeLimit)})'
+                            : 'Add Usage Limit',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 14,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF6F39E8),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
                       ),
                     ),
                   ),
@@ -858,9 +1057,77 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
   }
 }
 
+class _DurationPicker extends StatelessWidget {
+  const _DurationPicker({
+    required this.label,
+    required this.value,
+    required this.max,
+    required this.onChanged,
+    this.step = 1,
+  });
+
+  final String label;
+  final int value;
+  final int max;
+  final int step;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5F3FC),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10,
+              letterSpacing: 1.2,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF6F39E8),
+            ),
+          ),
+          const SizedBox(height: 6),
+          DropdownButtonHideUnderline(
+            child: DropdownButton<int>(
+              value: value,
+              isExpanded: true,
+              icon: const Icon(
+                Icons.keyboard_arrow_down_rounded,
+                color: Color(0xFF6F39E8),
+              ),
+              items: List.generate(max + 1, (i) {
+                final v = step == 1 ? i : i * step;
+                return DropdownMenuItem(
+                  value: v,
+                  child: Text(
+                    step == 1 ? '$v' : '$v',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF18181B),
+                    ),
+                  ),
+                );
+              }),
+              onChanged: (v) {
+                if (v != null) onChanged(v);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _UsageRingPainter extends CustomPainter {
   const _UsageRingPainter({required this.progress});
-
   final double progress;
 
   @override
@@ -879,7 +1146,7 @@ class _UsageRingPainter extends CustomPainter {
       ..strokeWidth = 12
       ..color = progress >= 1.0
           ? const Color(0xFFE53935)
-          : const Color(0xFF8B5CF6)
+          : const Color(0xFF6F39E8)
       ..strokeCap = StrokeCap.round;
 
     const startAngle = -1.8;
@@ -908,35 +1175,31 @@ class _UsageRingPainter extends CustomPainter {
       oldDelegate.progress != progress;
 }
 
-// Content Monitor Card
+// ---------------------------------------------------------------------------
+// Content Monitor card — shows 4 sample placeholders with 0 value when no data
+// ---------------------------------------------------------------------------
+
 class _ContentMonitorCard extends StatelessWidget {
   const _ContentMonitorCard({required this.loading, required this.snapshot});
 
   final bool loading;
   final ParentContentMonitorSnapshot snapshot;
 
-  static const _barColors = [
-    Color(0xFF14B8A6),
-    Color(0xFF8B5CF6),
-    Color(0xFF3B82F6),
+  static const _samplePlaceholders = [
+    ('Education & Learning', Color(0xFF14B8A6)),
+    ('Social Media', Color(0xFF6F39E8)),
+    ('Gaming', Color(0xFF3B82F6)),
+    ('Entertainment', Color(0xFFE09100)),
   ];
 
   @override
   Widget build(BuildContext context) {
     final items = snapshot.items;
+    final hasRealData = !loading && snapshot.hasData && items.isNotEmpty;
+
     return Container(
       padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+      decoration: _sectionDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -945,25 +1208,25 @@ class _ContentMonitorCard extends StatelessWidget {
               Text(
                 'Content Monitor',
                 style: TextStyle(
-                  fontSize: 26,
+                  fontSize: 20,
                   fontWeight: FontWeight.w800,
                   color: Color(0xFF18181B),
+                  letterSpacing: -0.3,
                 ),
               ),
               Spacer(),
-              Icon(Icons.monitor_heart, size: 18, color: Color(0xFF14B8A6)),
+              Icon(
+                Icons.bar_chart_rounded,
+                size: 18,
+                color: Color(0xFF14B8A6),
+              ),
             ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            loading
-                ? 'Loading content patterns...'
-                : (snapshot.hasData
-                      ? 'Top watched content types from analysed video chunks'
-                      : (snapshot.message ??
-                            'No data available for this period')),
-            style: const TextStyle(
-              fontSize: 11,
+          const SizedBox(height: 4),
+          const Text(
+            'Safe browsing & activity balance',
+            style: TextStyle(
+              fontSize: 12,
               color: Color(0xFFA1A1AA),
               fontWeight: FontWeight.w500,
             ),
@@ -980,40 +1243,121 @@ class _ContentMonitorCard extends StatelessWidget {
                 ),
               ),
             )
-          else if (!snapshot.hasData || items.isEmpty)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF4F4F5),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Text(
-                snapshot.message ?? 'No data available for this period',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF71717A),
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            )
-          else
+          else if (hasRealData)
             ...List.generate(items.length, (index) {
               final item = items[index];
               final pct = (item.percent / 100).clamp(0.0, 1.0);
-              final color = _barColors[index % _barColors.length];
+              final color = _samplePlaceholders[index % _samplePlaceholders.length].$2;
               return Padding(
                 padding: EdgeInsets.only(
                   bottom: index < items.length - 1 ? 12 : 0,
                 ),
                 child: _MonitorBar(
                   label: item.label,
-                  value: '${item.percent.toStringAsFixed(1)}%',
+                  value: '${item.percent.toStringAsFixed(0)}%',
                   progress: pct,
                   color: color,
                 ),
               );
+            })
+          else
+            // Placeholder rows with 0 value
+            ...List.generate(_samplePlaceholders.length, (index) {
+              final (label, color) = _samplePlaceholders[index];
+              return Padding(
+                padding: EdgeInsets.only(
+                  bottom: index < _samplePlaceholders.length - 1 ? 12 : 0,
+                ),
+                child: _MonitorBar(
+                  label: label,
+                  value: '0%',
+                  progress: 0.0,
+                  color: color.withValues(alpha: 0.55),
+                ),
+              );
             }),
+          // Protection status chips
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: _ProtectionChip(
+                  icon: Icons.shield_outlined,
+                  bg: const Color(0xFFFFF1F1),
+                  fg: const Color(0xFFB91C1C),
+                  title: 'Adult Risk',
+                  subtitle: 'Protected',
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _ProtectionChip(
+                  icon: Icons.check_circle_outline_rounded,
+                  bg: const Color(0xFFFFFAEB),
+                  fg: const Color(0xFFB45309),
+                  title: 'Harmful Media',
+                  subtitle: 'Filtered',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProtectionChip extends StatelessWidget {
+  const _ProtectionChip({
+    required this.icon,
+    required this.bg,
+    required this.fg,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final Color bg;
+  final Color fg;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: fg),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: fg,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF6B6E7A),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -1042,18 +1386,18 @@ class _MonitorBar extends StatelessWidget {
             Text(
               label,
               style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF3F3F46),
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF2C2D36),
               ),
             ),
             const Spacer(),
             Text(
               value,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF52525B),
+                fontWeight: FontWeight.w800,
+                color: color,
               ),
             ),
           ],
@@ -1073,206 +1417,284 @@ class _MonitorBar extends StatelessWidget {
   }
 }
 
-// Content Time Restrictions Card
-class _ContentTimeCard extends StatelessWidget {
-  final bool socialMediaLimit;
-  final bool gamingLimit;
-  final bool entertainmentLimit;
-  final int socialLimitMinutes;
-  final int gamingLimitMinutes;
-  final int entertainmentLimitMinutes;
-  final String socialDnsStatus;
-  final String gamingDnsStatus;
-  final String entertainmentDnsStatus;
-  final VoidCallback onChangeSocialLimit;
-  final VoidCallback onChangeGamingLimit;
-  final VoidCallback onChangeEntertainmentLimit;
-  final Future<void> Function(bool) onSocialChanged;
-  final Future<void> Function(bool) onGamingChanged;
-  final Future<void> Function(bool) onEntertainmentChanged;
+// ---------------------------------------------------------------------------
+// App Restrictions — installed apps, native icons, block/unblock toggles
+// ---------------------------------------------------------------------------
 
-  const _ContentTimeCard({
-    required this.socialMediaLimit,
-    required this.gamingLimit,
-    required this.entertainmentLimit,
-    required this.socialLimitMinutes,
-    required this.gamingLimitMinutes,
-    required this.entertainmentLimitMinutes,
-    required this.socialDnsStatus,
-    required this.gamingDnsStatus,
-    required this.entertainmentDnsStatus,
-    required this.onChangeSocialLimit,
-    required this.onChangeGamingLimit,
-    required this.onChangeEntertainmentLimit,
-    required this.onSocialChanged,
-    required this.onGamingChanged,
-    required this.onEntertainmentChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Content\nRestrictions',
-            style: TextStyle(
-              fontSize: 26,
-              fontWeight: FontWeight.w800,
-              height: 1.15,
-              color: Color(0xFF18181B),
-            ),
-          ),
-          const SizedBox(height: 18),
-          _RestrictionRow(
-            icon: Icons.people,
-            iconBg: const Color(0xFFF3E8FF),
-            iconColor: const Color(0xFF8B5CF6),
-            title: 'Social Media',
-            subtitle: 'Limit: ${_formatMinutes(socialLimitMinutes)}',
-            statusText: socialDnsStatus,
-            value: socialMediaLimit,
-            onChanged: (v) => onSocialChanged(v),
-            onSubtitleTap: onChangeSocialLimit,
-          ),
-          const SizedBox(height: 14),
-          _RestrictionRow(
-            icon: Icons.sports_esports,
-            iconBg: const Color(0xFFEFF6FF),
-            iconColor: const Color(0xFF3B82F6),
-            title: 'Gaming',
-            subtitle: 'Limit: ${_formatMinutes(gamingLimitMinutes)}',
-            statusText: gamingDnsStatus,
-            value: gamingLimit,
-            onChanged: (v) => onGamingChanged(v),
-            onSubtitleTap: onChangeGamingLimit,
-          ),
-          const SizedBox(height: 14),
-          _RestrictionRow(
-            icon: Icons.movie,
-            iconBg: const Color(0xFFF0FDFA),
-            iconColor: const Color(0xFF14B8A6),
-            title: 'Entertainment',
-            subtitle: 'Limit: ${_formatMinutes(entertainmentLimitMinutes)}',
-            statusText: entertainmentDnsStatus,
-            value: entertainmentLimit,
-            onChanged: (v) => onEntertainmentChanged(v),
-            onSubtitleTap: onChangeEntertainmentLimit,
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: onChangeSocialLimit,
-              icon: const Icon(Icons.timer_outlined, size: 18),
-              label: Text(
-                'Set Social Media Limit (${_formatMinutes(socialLimitMinutes)})',
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// App Restrictions Card
-class _AppRestrictionsCard extends StatelessWidget {
+class _AppRestrictionsCard extends StatefulWidget {
   final bool loading;
   final List<ParentalAppRule> rules;
   final Future<void> Function(String packageName, bool blocked) onRuleChanged;
-  final Map<String, int> appLimits;
-  final Future<void> Function(ParentalAppRule rule) onEditLimit;
 
   const _AppRestrictionsCard({
     required this.loading,
     required this.rules,
     required this.onRuleChanged,
-    required this.appLimits,
-    required this.onEditLimit,
   });
 
   @override
+  State<_AppRestrictionsCard> createState() => _AppRestrictionsCardState();
+}
+
+class _AppRestrictionsCardState extends State<_AppRestrictionsCard> {
+  bool _showAll = false;
+
+  @override
   Widget build(BuildContext context) {
+    final visible =
+        widget.rules.where((r) => r.appLabel.trim().isNotEmpty).toList();
+    final displayCount = _showAll
+        ? visible.length
+        : visible.length.clamp(0, ParentalAppCatalog.collapsedCount);
+    final displayed = visible.take(displayCount).toList();
+    final canExpand = visible.length > ParentalAppCatalog.collapsedCount;
+
     return Container(
       padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+      decoration: _sectionDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
-            children: [
+          Row(
+            children: const [
               Text(
                 'App Restrictions',
                 style: TextStyle(
-                  fontSize: 26,
+                  fontSize: 20,
                   fontWeight: FontWeight.w800,
                   color: Color(0xFF18181B),
+                  letterSpacing: -0.3,
                 ),
               ),
               Spacer(),
               Text(
-                'View All +',
+                'Block · Unblock',
                 style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF8B5CF6),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF6F39E8),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 18),
-          if (loading)
-            const Center(child: CircularProgressIndicator())
-          else
-            ...rules.take(10).map((rule) {
-              final icon = _iconForPackage(rule.packageName, rule.appLabel);
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 14),
-                child: _AppRestrictionRow(
-                  icon: icon.icon,
-                  iconBg: icon.iconBg,
-                  iconColor: icon.iconColor,
-                  iconIsBrand: icon.isBrand,
-                  title: rule.appLabel,
-                  subtitle:
-                      'Limit: ${_formatMinutes(appLimits[rule.packageName] ?? 0)}  •  ${rule.packageName}',
-                  value: rule.blocked,
-                  onChanged: (val) => onRuleChanged(rule.packageName, val),
-                  onEditLimit: () => onEditLimit(rule),
+          const SizedBox(height: 4),
+          const Text(
+            'Blocked apps stay blocked until you turn them off',
+            style: TextStyle(
+              fontSize: 12,
+              color: Color(0xFFA1A1AA),
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (widget.loading)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: CircularProgressIndicator(),
+              ),
+            )
+          else if (visible.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF5F3FC),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Text(
+                'No user apps detected yet. Enable Usage Access, then reopen '
+                'this tab to refresh installed apps.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF71717A),
+                  fontWeight: FontWeight.w600,
                 ),
-              );
-            }),
+              ),
+            )
+          else ...[
+            for (final rule in displayed) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _AppRestrictionRow(
+                  rule: rule,
+                  onChanged: (val) =>
+                      widget.onRuleChanged(rule.packageName, val),
+                ),
+              ),
+            ],
+            if (canExpand && !_showAll)
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: OutlinedButton(
+                  onPressed: () => setState(() => _showAll = true),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF6F39E8),
+                    side: const BorderSide(color: Color(0xFFD6CCF4), width: 1.4),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  child: Text(
+                    'Show All Apps (${visible.length})',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+            if (_showAll && canExpand)
+              TextButton(
+                onPressed: () => setState(() => _showAll = false),
+                child: const Text(
+                  'Show less',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF6F39E8),
+                  ),
+                ),
+              ),
+          ],
         ],
       ),
     );
   }
 }
 
-// Safety Controls Card
+// ---------------------------------------------------------------------------
+// Bedtime Schedule card
+// ---------------------------------------------------------------------------
+
+class _BedtimeScheduleCard extends StatelessWidget {
+  const _BedtimeScheduleCard({
+    required this.sleepHour,
+    required this.wakeUp,
+    required this.onEdit,
+  });
+
+  final TimeOfDay sleepHour;
+  final TimeOfDay wakeUp;
+  final VoidCallback onEdit;
+
+  String _fmt(TimeOfDay t) {
+    final h = t.hour.toString().padLeft(2, '0');
+    final m = t.minute.toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: _sectionDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Bedtime Schedule',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF18181B),
+              letterSpacing: -0.3,
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Automatic device rest during night hours',
+            style: TextStyle(
+              fontSize: 12,
+              color: Color(0xFFA1A1AA),
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _TimeTile(
+                  label: 'SLEEP HOUR',
+                  value: _fmt(sleepHour),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _TimeTile(
+                  label: 'WAKE UP',
+                  value: _fmt(wakeUp),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            height: 44,
+            child: OutlinedButton(
+              onPressed: onEdit,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF6F39E8),
+                side: const BorderSide(color: Color(0xFFD6CCF4), width: 1.4),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              child: const Text(
+                'Edit Schedule',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TimeTile extends StatelessWidget {
+  const _TimeTile({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5F3FC),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10,
+              letterSpacing: 1.2,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF6F39E8),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF18181B),
+              letterSpacing: -0.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Safety controls card
+// ---------------------------------------------------------------------------
+
 class _SafetyControlsCard extends StatelessWidget {
   final bool safeSearchActive;
   final bool blockAdultContent;
@@ -1298,58 +1720,69 @@ class _SafetyControlsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+      decoration: _sectionDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
             'Safety Controls',
             style: TextStyle(
-              fontSize: 26,
+              fontSize: 20,
               fontWeight: FontWeight.w800,
               color: Color(0xFF18181B),
+              letterSpacing: -0.3,
             ),
           ),
-          const SizedBox(height: 18),
-          Row(
-            children: [
-              Icon(
-                vpnActive ? Icons.shield : Icons.shield_outlined,
-                size: 14,
-                color: vpnActive ? Colors.green.shade600 : Colors.grey.shade500,
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  filterStatusLabel,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: vpnActive
-                        ? Colors.green.shade700
-                        : Colors.grey.shade600,
-                  ),
-                ),
-              ),
-            ],
+          const SizedBox(height: 4),
+          const Text(
+            'Real-time device-level defenses',
+            style: TextStyle(
+              fontSize: 12,
+              color: Color(0xFFA1A1AA),
+              fontWeight: FontWeight.w500,
+            ),
           ),
           const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: vpnActive
+                  ? const Color(0xFFDCFCE7)
+                  : const Color(0xFFF5F3FC),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  vpnActive ? Icons.shield : Icons.shield_outlined,
+                  size: 14,
+                  color: vpnActive
+                      ? const Color(0xFF15803D)
+                      : const Color(0xFF71717A),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    filterStatusLabel,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: vpnActive
+                          ? const Color(0xFF15803D)
+                          : const Color(0xFF71717A),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
           _SafetyRow(
             icon: Icons.search,
             iconBg: const Color(0xFFF0FDFA),
             iconColor: const Color(0xFF14B8A6),
             title: 'SafeSearch Active',
-            subtitle: 'Filters explicit search results',
+            subtitle: 'Filters explicit search engine hits',
             statusText: safeSearchStatus,
             value: safeSearchActive,
             onChanged: (v) => onSafeSearchChanged(v),
@@ -1358,9 +1791,9 @@ class _SafetyControlsCard extends StatelessWidget {
           _SafetyRow(
             icon: Icons.block,
             iconBg: const Color(0xFFF3E8FF),
-            iconColor: const Color(0xFF8B5CF6),
-            title: 'Block Adult Content',
-            subtitle: 'System-wide web filtering',
+            iconColor: const Color(0xFF6F39E8),
+            title: 'Block Adult Sites',
+            subtitle: 'System-wide real-time web filter',
             statusText: adultBlockStatus,
             value: blockAdultContent,
             onChanged: (v) => onAdultBlockChanged(v),
@@ -1371,90 +1804,185 @@ class _SafetyControlsCard extends StatelessWidget {
   }
 }
 
-// Reusable Restriction Row
-class _RestrictionRow extends StatelessWidget {
+// ---------------------------------------------------------------------------
+// Reusable rows
+// ---------------------------------------------------------------------------
+
+class _AppRestrictionRow extends StatelessWidget {
+  final ParentalAppRule rule;
+  final ValueChanged<bool> onChanged;
+
+  const _AppRestrictionRow({
+    required this.rule,
+    required this.onChanged,
+  });
+
+  Widget _leadingIcon() {
+    final bytes = rule.iconBytes;
+    if (bytes != null && bytes.isNotEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Image.memory(
+          bytes,
+          width: 42,
+          height: 42,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => _fallbackIcon(),
+        ),
+      );
+    }
+    return _fallbackIcon();
+  }
+
+  Widget _fallbackIcon() {
+    final icon = _iconForPackage(rule.packageName, rule.appLabel);
+    return Container(
+      width: 42,
+      height: 42,
+      decoration: BoxDecoration(
+        color: icon.iconBg,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Center(
+        child: icon.isBrand
+            ? FaIcon(icon.icon, size: 18, color: icon.iconColor)
+            : Icon(icon.icon, size: 20, color: icon.iconColor),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final blocked = rule.blocked;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF9F8FE),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          _leadingIcon(),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  rule.appLabel,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF18181B),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  blocked ? 'Blocked' : 'Unblocked',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: blocked
+                        ? const Color(0xFFDC2626)
+                        : const Color(0xFF16A34A),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: blocked,
+            onChanged: onChanged,
+            activeColor: Colors.white,
+            activeTrackColor: const Color(0xFF6F39E8),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SafetyRow extends StatelessWidget {
   final IconData icon;
   final Color iconBg;
   final Color iconColor;
   final String title;
   final String subtitle;
-  final String? statusText;
+  final String statusText;
   final bool value;
   final ValueChanged<bool> onChanged;
-  final VoidCallback? onSubtitleTap;
 
-  const _RestrictionRow({
+  const _SafetyRow({
     required this.icon,
     required this.iconBg,
     required this.iconColor,
     required this.title,
     required this.subtitle,
-    this.statusText,
+    required this.statusText,
     required this.value,
     required this.onChanged,
-    this.onSubtitleTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            color: iconBg,
-            borderRadius: BorderRadius.circular(18),
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF9F8FE),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: iconBg,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, size: 20, color: iconColor),
           ),
-          child: Icon(icon, size: 18, color: iconColor),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF18181B),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF18181B),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 2),
-              GestureDetector(
-                onTap: onSubtitleTap,
-                child: Text(
+                const SizedBox(height: 2),
+                Text(
                   subtitle,
                   style: const TextStyle(
-                    fontSize: 11,
+                    fontSize: 11.5,
                     color: Color(0xFF71717A),
                     fontWeight: FontWeight.w500,
                   ),
                 ),
-              ),
-              if (statusText != null && statusText!.isNotEmpty) ...[
-                const SizedBox(height: 2),
-                Text(
-                  statusText!,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: Color(0xFF8B5CF6),
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
               ],
-            ],
+            ),
           ),
-        ),
-        Transform.scale(
-          scale: 1,
-          child: _BlockToggleButton(value: value, onChanged: onChanged),
-        ),
-      ],
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeColor: Colors.white,
+            activeTrackColor: const Color(0xFF6F39E8),
+          ),
+        ],
+      ),
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers & icons
+// ---------------------------------------------------------------------------
 
 String _formatMinutes(int minutes) {
   final h = minutes ~/ 60;
@@ -1526,7 +2054,7 @@ _AppIconStyle _iconForPackage(String packageName, String appLabel) {
       isBrand: true,
     );
   }
-  if (v.contains('twitter') || v.contains('x')) {
+  if (v.contains('twitter') || v.contains(' x')) {
     return const _AppIconStyle(
       FontAwesomeIcons.xTwitter,
       Color(0xFFF2F2F2),
@@ -1541,6 +2069,13 @@ _AppIconStyle _iconForPackage(String packageName, String appLabel) {
       Color(0xFF5563D4),
     );
   }
+  if (v.contains('roblox')) {
+    return const _AppIconStyle(
+      Icons.videogame_asset_rounded,
+      Color(0xFFEAF0FF),
+      Color(0xFF1877F2),
+    );
+  }
   return const _AppIconStyle(
     Icons.apps_rounded,
     Color(0xFFF1F3F8),
@@ -1548,195 +2083,34 @@ _AppIconStyle _iconForPackage(String packageName, String appLabel) {
   );
 }
 
-// App Restriction Row with limit text
-class _AppRestrictionRow extends StatelessWidget {
-  final IconData icon;
-  final Color iconBg;
-  final Color iconColor;
-  final bool iconIsBrand;
-  final String title;
-  final String subtitle;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-  final VoidCallback onEditLimit;
+// ---------------------------------------------------------------------------
+// Card decorations
+// ---------------------------------------------------------------------------
 
-  const _AppRestrictionRow({
-    required this.icon,
-    required this.iconBg,
-    required this.iconColor,
-    this.iconIsBrand = false,
-    required this.title,
-    required this.subtitle,
-    required this.value,
-    required this.onChanged,
-    required this.onEditLimit,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            color: iconBg,
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: Center(
-            child: iconIsBrand
-                ? FaIcon(icon, size: 16, color: iconColor)
-                : Icon(icon, size: 18, color: iconColor),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF18181B),
-                ),
-              ),
-              const SizedBox(height: 2),
-              GestureDetector(
-                onTap: onEditLimit,
-                child: Text(
-                  subtitle,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF71717A),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        _BlockToggleButton(value: value, onChanged: onChanged),
-      ],
-    );
-  }
-}
-
-// Safety Row
-class _SafetyRow extends StatelessWidget {
-  final IconData icon;
-  final Color iconBg;
-  final Color iconColor;
-  final String title;
-  final String subtitle;
-  final String statusText;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  const _SafetyRow({
-    required this.icon,
-    required this.iconBg,
-    required this.iconColor,
-    required this.title,
-    required this.subtitle,
-    required this.statusText,
-    required this.value,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            color: iconBg,
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: Icon(icon, size: 18, color: iconColor),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF18181B),
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                subtitle,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: Color(0xFF71717A),
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              if (statusText.isNotEmpty) ...[
-                const SizedBox(height: 2),
-                Text(
-                  statusText,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: Color(0xFF14B8A6),
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-        _BlockToggleButton(value: value, onChanged: onChanged),
-      ],
-    );
-  }
-}
-
-class _BlockToggleButton extends StatelessWidget {
-  const _BlockToggleButton({required this.value, required this.onChanged});
-
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final isBlocked = value;
-    return InkWell(
-      onTap: () => onChanged(!value),
-      borderRadius: BorderRadius.circular(18),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        width: 92,
-        height: 34,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: isBlocked ? const Color(0xFFFEF2F2) : const Color(0xFF8B5CF6),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: isBlocked
-                ? const Color(0xFFFCA5A5)
-                : const Color(0xFF8B5CF6),
-          ),
-        ),
-        child: Text(
-          isBlocked ? 'Unblock' : 'Block',
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
-            color: isBlocked ? const Color(0xFFB91C1C) : Colors.white,
-          ),
-        ),
+BoxDecoration _cardDecoration() {
+  return BoxDecoration(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(20),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withValues(alpha: 0.03),
+        blurRadius: 12,
+        offset: const Offset(0, 4),
       ),
-    );
-  }
+    ],
+  );
 }
 
-// Bottom Navigation Bar
+BoxDecoration _sectionDecoration() {
+  return BoxDecoration(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(24),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withValues(alpha: 0.03),
+        blurRadius: 16,
+        offset: const Offset(0, 6),
+      ),
+    ],
+  );
+}

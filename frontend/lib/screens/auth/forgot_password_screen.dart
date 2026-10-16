@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../services/auth_api_exception.dart';
 import '../../services/local_auth_service.dart';
 import '../../widgets/mindsync_logo.dart';
 
@@ -17,6 +18,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final _confirmPasswordController = TextEditingController();
   final _auth = LocalAuthService();
   bool _loading = false;
+  bool _obscurePassword = true;
+  bool _obscureConfirm = true;
 
   @override
   void dispose() {
@@ -65,6 +68,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       setState(() => _loading = false);
       _show('Password updated. You can log in with your new password.');
       Navigator.of(context).pop();
+    } on AuthApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      _show(e.message);
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
@@ -81,91 +88,240 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F6FA),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFFF6F6FA),
-        elevation: 0,
-        foregroundColor: const Color(0xFF1E2432),
-        title: const Text(
-          'Forgot password',
-          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
-        ),
-      ),
+      backgroundColor: const Color(0xFFF3F1FB),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Center(
-                child: SizedBox(
-                  height: 72,
-                  width: 140,
-                  child: MindSyncLogo(height: 72, width: 140),
+              // ---------- BACK BUTTON ----------
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Material(
+                  color: Colors.white,
+                  shape: const CircleBorder(),
+                  elevation: 0,
+                  child: InkWell(
+                    onTap: () => Navigator.of(context).pop(),
+                    customBorder: const CircleBorder(),
+                    child: const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: Icon(
+                        Icons.arrow_back_rounded,
+                        size: 20,
+                        color: Color(0xFF1F2330),
+                      ),
+                    ),
+                  ),
                 ),
               ),
-              const SizedBox(height: 12),
-              const Text(
-                'Enter the same name, email, and username as on your account. '
-                'If they all match, your password will be updated.',
-                style: TextStyle(
-                  fontSize: 14,
-                  height: 1.35,
-                  color: Color(0xFF6D6F7A),
+
+              const SizedBox(height: 8),
+
+              // ---------- CENTERED LOGO (same size as Login/Signup) ----------
+              const Center(
+                child: SizedBox(
+                  height: 78,
+                  width: 160,
+                  child: MindSyncLogo(height: 78, width: 160),
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Center(
+                child: Text(
+                  'Reset your password',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    color: Color(0xFF6D6F7A),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // ---------- HEADER ----------
+              const Padding(
+                padding: EdgeInsets.only(left: 4),
+                child: Text(
+                  'Forgot password?',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF1F2330),
+                    letterSpacing: -0.4,
+                    height: 1.15,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Padding(
+                padding: EdgeInsets.only(left: 4),
+                child: Text(
+                  'Verify your identity to set a new password.',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    color: Color(0xFF6D6F7A),
+                    fontWeight: FontWeight.w500,
+                    height: 1.4,
+                  ),
                 ),
               ),
               const SizedBox(height: 20),
+
+              // ---------- IDENTITY VERIFICATION SECTION ----------
+              const Padding(
+                padding: EdgeInsets.only(left: 4, bottom: 10),
+                child: Text(
+                  'IDENTITY VERIFICATION',
+                  style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 1.3,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF6F39E8),
+                  ),
+                ),
+              ),
+
               _ForgotField(
-                hint: 'Full name (as registered)',
+                label: 'FULL NAME',
+                hint: 'First name (same as signup)',
+                icon: Icons.badge_outlined,
                 controller: _nameController,
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               _ForgotField(
-                hint: 'Email address',
+                label: 'EMAIL',
+                hint: 'you@example.com',
+                icon: Icons.mail_outline_rounded,
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               _ForgotField(
-                hint: 'Username',
+                label: 'USERNAME',
+                hint: 'Your username',
+                icon: Icons.alternate_email_rounded,
                 controller: _usernameController,
               ),
-              const SizedBox(height: 14),
-              _ForgotField(
-                hint: 'New password',
-                controller: _passwordController,
-                obscure: true,
-              ),
-              const SizedBox(height: 14),
-              _ForgotField(
-                hint: 'Confirm new password',
-                controller: _confirmPasswordController,
-                obscure: true,
-              ),
+
               const SizedBox(height: 22),
+
+              // ---------- NEW PASSWORD SECTION ----------
+              const Padding(
+                padding: EdgeInsets.only(left: 4, bottom: 10),
+                child: Text(
+                  'NEW PASSWORD',
+                  style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 1.3,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF6F39E8),
+                  ),
+                ),
+              ),
+
+              // Field 1 — no duplicate label (section header covers it)
+              _ForgotField(
+                label: '',
+                hint: 'Enter new password (min 8 characters)',
+                icon: Icons.lock_outline_rounded,
+                controller: _passwordController,
+                obscure: _obscurePassword,
+                trailing: IconButton(
+                  splashRadius: 20,
+                  icon: Icon(
+                    _obscurePassword
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
+                    size: 20,
+                    color: const Color(0xFF9B9EA9),
+                  ),
+                  onPressed: () =>
+                      setState(() => _obscurePassword = !_obscurePassword),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Field 2 — no duplicate label either
+              _ForgotField(
+                label: '',
+                hint: 'Re-enter new password',
+                icon: Icons.lock_person_outlined,
+                controller: _confirmPasswordController,
+                obscure: _obscureConfirm,
+                trailing: IconButton(
+                  splashRadius: 20,
+                  icon: Icon(
+                    _obscureConfirm
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
+                    size: 20,
+                    color: const Color(0xFF9B9EA9),
+                  ),
+                  onPressed: () =>
+                      setState(() => _obscureConfirm = !_obscureConfirm),
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              // ---------- UPDATE BUTTON ----------
               SizedBox(
                 width: double.infinity,
                 height: 54,
                 child: ElevatedButton(
                   onPressed: _loading ? null : _submit,
                   style: ElevatedButton.styleFrom(
-                    elevation: 6,
-                    shadowColor: const Color(0x4D6F39E8),
+                    elevation: 0,
                     foregroundColor: Colors.white,
                     backgroundColor: const Color(0xFF6F39E8),
+                    disabledBackgroundColor: const Color(0xFFD0C7EE),
+                    disabledForegroundColor: Colors.white70,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(28),
                     ),
                   ),
                   child: Text(
-                    _loading ? 'Updating...' : 'Update password',
+                    _loading ? 'Updating...' : 'Update Password',
                     style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
                     ),
                   ),
                 ),
               ),
+
+              const SizedBox(height: 16),
+
+              // ---------- BACK TO LOGIN ----------
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    'Remembered your password?',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Color(0xFF666A79),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text(
+                      'Login',
+                      style: TextStyle(
+                        color: Color(0xFF6F39E8),
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13.5,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 8),
             ],
           ),
         ),
@@ -174,39 +330,93 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Reusable field widget
+// ---------------------------------------------------------------------------
+
 class _ForgotField extends StatelessWidget {
   const _ForgotField({
+    required this.label,
     required this.hint,
     required this.controller,
+    this.icon,
     this.obscure = false,
     this.keyboardType,
+    this.trailing,
   });
 
+  final String label;
   final String hint;
   final TextEditingController controller;
+  final IconData? icon;
   final bool obscure;
   final TextInputType? keyboardType;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      obscureText: obscure,
-      keyboardType: keyboardType,
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: const TextStyle(color: Color(0xFF9093A1), fontSize: 15),
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 20,
-          vertical: 16,
+    final hasLabel = label.trim().isNotEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (hasLabel)
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 6),
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Color(0xFF6F39E8),
+                letterSpacing: 1.1,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        TextField(
+          controller: controller,
+          obscureText: obscure,
+          keyboardType: keyboardType,
+          style: const TextStyle(
+            fontSize: 14.5,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF1F2330),
+          ),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(
+              color: Color(0xFF9B9EA9),
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+            prefixIcon: icon != null
+                ? Icon(icon, size: 20, color: const Color(0xFF9B9EA9))
+                : null,
+            suffixIcon: trailing,
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 16,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: const BorderSide(color: Color(0xFFE7E4F1)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: const BorderSide(color: Color(0xFFE7E4F1)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: const BorderSide(
+                color: Color(0xFF6F39E8),
+                width: 1.6,
+              ),
+            ),
+          ),
         ),
-        filled: true,
-        fillColor: const Color(0xFFF0F2F6),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(22),
-          borderSide: BorderSide.none,
-        ),
-      ),
+      ],
     );
   }
 }

@@ -202,6 +202,13 @@ class ScheduledFaceCaptureController(
 
     private fun tryRecordFace(ignoreCooldown: Boolean, reason: String) {
         if (!TrackerPrefs.shouldAllowUsageCollection(service)) return
+        if (!MonitoringPolicy.heavyCaptureAllowed(service)) {
+            MonitoringLog.i(
+                "Facial Expression Detection: deferred (battery, power saver, or thermal)",
+            )
+            if (sessionActive) scheduleFiveMinuteTimer()
+            return
+        }
         if (TrackerPrefs.faceVerified(service) && !TrackerPrefs.unlockFaceSessionOk(service)) {
             MonitoringLog.i(
                 "Facial Expression Detection: waiting for unlock face match before recording",

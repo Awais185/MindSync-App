@@ -20,6 +20,7 @@ object FacialExpressionUploader {
         sourcePackageName: String,
         durationSeconds: Int = 30,
         verifyFace: Boolean = true,
+        identityPreverified: Boolean = false,
         clientTimestampMs: Long = System.currentTimeMillis(),
         recordingType: String = "face_camera",
     ): Boolean {
@@ -27,12 +28,17 @@ object FacialExpressionUploader {
         val token = TrackerPrefs.token(context)
         if (baseUrl.isBlank() || token.isBlank()) return false
 
-        if (verifyFace) {
+        if (verifyFace && !identityPreverified) {
             val frame = extractVideoFrameJpeg(context, file) ?: run {
                 MonitoringLog.w("Face upload skipped: could not extract verification frame")
                 return false
             }
-            val matched = FaceTrackVerify.verifyStillImage(context, frame)
+            val matched =
+                FaceTrackVerify.verifyStillImage(
+                    context,
+                    frame,
+                    unlockCapture = TrackerPrefs.unlockFaceSessionOk(context),
+                )
             try {
                 frame.delete()
             } catch (_: Exception) {
@@ -60,6 +66,7 @@ object FacialExpressionUploader {
             clientTimestampMs,
             recordingType,
             verifyFace,
+            identityPreverified,
         )
     }
 
@@ -77,6 +84,7 @@ object FacialExpressionUploader {
         clientTimestampMs: Long,
         recordingType: String,
         verifyFace: Boolean,
+        identityPreverified: Boolean,
     ): Boolean {
         var ok =
             postMultipart(
@@ -92,6 +100,7 @@ object FacialExpressionUploader {
                 clientTimestampMs,
                 recordingType,
                 verifyFace,
+                identityPreverified,
             )
         if (!ok) {
             ok =
@@ -108,6 +117,7 @@ object FacialExpressionUploader {
                     clientTimestampMs,
                     recordingType,
                     verifyFace,
+                    identityPreverified,
                 )
         }
         return ok
@@ -126,6 +136,7 @@ object FacialExpressionUploader {
         clientTimestampMs: Long,
         recordingType: String,
         verifyFace: Boolean,
+        identityPreverified: Boolean,
     ): Boolean {
         val url = URL(urlString)
         val conn =
@@ -150,6 +161,10 @@ object FacialExpressionUploader {
                 field("duration_seconds", durationSeconds.toString())
                 field("recording_type", recordingType)
                 field("verify_face", if (verifyFace) "true" else "false")
+                field(
+                    "identity_preverified",
+                    if (identityPreverified) "true" else "false",
+                )
                 field("run_mood_scan", "false")
                 field("client_timestamp_ms", clientTimestampMs.toString())
                 field("session_id", MonitoringSession.currentSessionId(context))
@@ -197,12 +212,43 @@ object FacialExpressionUploader {
     /** Extract one JPEG frame and verify against enrolled profile before persisting clips. */
     fun verifyVideoIdentity(context: Context, video: File): Boolean {
         if (!TrackerPrefs.faceVerified(context)) return true
+        if (TrackerPrefs.unlockFaceSessionOk(context)) {
+            return hasFaceInVideo(context, video)
+        }
         val sampleUs = longArrayOf(400_000L, 1_500_000L, 4_000_000L, 8_000_000L, 12_000_000L)
         for (timeUs in sampleUs) {
             val frame = extractVideoFrameJpeg(context, video, timeUs) ?: continue
             try {
-                if (FaceTrackVerify.verifyStillImage(context, frame)) {
+                if (FaceTrackVerify.verifyStillImage(context, frame, unlockCapture = true)) {
                     return true
+                }
+            } finally {
+                try {
+                    frame.delete()
+                } catch (_: Exception) {
+                }
+            }
+        }
+        return false
+    }
+
+    private fun hasFaceInVideo(context: Context, video: File): Boolean {
+        val sampleUs = longArrayOf(400_000L, 2_000_000L, 6_000_000L, 12_000_000L, 20_000_000L)
+        for (timeUs in sampleUs) {
+            val frame = extractVideoFrameJpeg(context, video, timeUs) ?: continue
+            try {
+                val bitmap = android.graphics.BitmapFactory.decodeFile(frame.absolutePath)
+                if (bitmap != null) {
+                    val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bitmap, 0)
+                    bitmap.recycle()
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    val found = java.util.concurrent.atomic.AtomicBoolean(false)
+                    FacePresenceDetector.detectPresence(image) { present ->
+                        found.set(present)
+                        latch.countDown()
+                    }
+                    latch.await(4, java.util.concurrent.TimeUnit.SECONDS)
+                    if (found.get()) return true
                 }
             } finally {
                 try {

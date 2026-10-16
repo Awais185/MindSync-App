@@ -22,6 +22,7 @@ object FaceTrackVerify {
         context: Context,
         imageFile: File,
         applyMatchPause: Boolean = false,
+        unlockCapture: Boolean = false,
     ): Boolean {
         val baseUrl = TrackerPrefs.baseUrl(context)
         val token = TrackerPrefs.token(context)
@@ -50,12 +51,15 @@ object FaceTrackVerify {
             val leftEye = face.leftEyeOpenProbability
             val rightEye = face.rightEyeOpenProbability
 
-            if (rotY < -30f || rotY > 30f || rotX < -30f || rotX > 30f) {
+            val maxRot = if (unlockCapture) 45f else 30f
+            if (rotY < -maxRot || rotY > maxRot || rotX < -maxRot || rotX > maxRot) {
                 Log.i("FaceTrackVerify", "Face not looking at device (rotY=$rotY, rotX=$rotX), skipping upload")
                 return false
             }
 
-            if (leftEye != null && leftEye < 0.2f && rightEye != null && rightEye < 0.2f) {
+            if (!unlockCapture &&
+                leftEye != null && leftEye < 0.2f && rightEye != null && rightEye < 0.2f
+            ) {
                 Log.i("FaceTrackVerify", "Eyes appear closed, skipping upload")
                 return false
             }

@@ -176,10 +176,20 @@ class ScreenTimeUpdateView(views.APIView):
             },
         )
 
-        if data.get('mode', 'delta') == 'absolute':
+        if data.get('mode', 'delta') == 'sleep_absolute':
+            if data.get('sleep_time') is not None:
+                row.sleep_time = int(data['sleep_time'])
+            if data.get('late_night_activity') is not None:
+                row.late_night_activity = int(data['late_night_activity'])
+            row.save()
+        elif data.get('mode', 'delta') == 'absolute':
             row.total_screen_time = int(data['total_screen_time'])
             row.social_media_time = int(data.get('social_media_time') or 0)
             row.video_watch_time = int(data.get('video_watch_time') or 0)
+            if data.get('sleep_time') is not None:
+                row.sleep_time = int(data['sleep_time'])
+            if data.get('late_night_activity') is not None:
+                row.late_night_activity = int(data['late_night_activity'])
             row.save()
         else:
             from django.db.models import F
@@ -205,6 +215,8 @@ class ScreenTimeUpdateView(views.APIView):
                 'total_screen_time': row.total_screen_time,
                 'social_media_time': row.social_media_time,
                 'video_watch_time': row.video_watch_time,
+                'sleep_time': row.sleep_time,
+                'late_night_activity': row.late_night_activity,
             }
         )
 
@@ -231,6 +243,8 @@ class ScreenTimeTodayView(views.APIView):
                 'total_screen_time': row.total_screen_time,
                 'social_media_time': row.social_media_time,
                 'video_watch_time': row.video_watch_time,
+                'sleep_time': row.sleep_time,
+                'late_night_activity': row.late_night_activity,
                 'updated_at': row.updated_at.isoformat(),
             }
         )

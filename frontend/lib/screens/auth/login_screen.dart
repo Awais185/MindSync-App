@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../main_shell_screen.dart';
 import '../../config/api_config.dart';
 import '../../models/google_auth_models.dart';
+import '../../services/auth_api_exception.dart';
 import '../../services/local_auth_service.dart';
 import '../../services/screen_time_service.dart';
 import '../../services/tracking_permissions_gate.dart';
@@ -27,6 +28,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _auth = LocalAuthService();
   bool _loading = false;
   bool _rememberMe = false;
+  bool _obscurePassword = true;
 
   @override
   void initState() {
@@ -59,9 +61,14 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
     setState(() => _loading = true);
-    LocalAuthUser? user;
+    LocalAuthUser user;
     try {
       user = await _auth.login(email, password);
+    } on AuthApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      _show(e.message);
+      return;
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
@@ -74,14 +81,6 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
     if (!mounted) return;
-    if (user == null) {
-      setState(() => _loading = false);
-      _show(
-        'Invalid email or password. Use the same email/username as in the '
-        'MindSync database, with the server running.',
-      );
-      return;
-    }
 
     await _persistRememberedCredentials(email: email, password: password);
     await _finishLogin(user);
@@ -136,7 +135,11 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _finishLogin(LocalAuthUser user) async {
     if (!context.mounted) return;
-    if (!await TrackingPermissionsGate.isFullyGranted()) {
+    final userIdEarly = await _auth.getStoredUserId();
+    await ScreenTimeService.instance.persistDevicePermissionGrants(
+      userId: userIdEarly,
+    );
+    if (!await TrackingPermissionsGate.isFullyGranted(userIdEarly)) {
       final trackingOk =
           await TrackingPermissionsGate.runMandatoryAfterAuthenticatedSession(
         context,
@@ -145,13 +148,14 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!trackingOk) {
         if (!mounted) return;
         setState(() => _loading = false);
-        _show('Permissions are required to use MindSync.');
+        _show('Sign in again to finish setup.');
         return;
       }
     }
 
     final userId = await _auth.getStoredUserId();
     await ScreenTimeService.instance.setTrackingUser(userId);
+    await ScreenTimeService.instance.persistDevicePermissionGrants(userId: userId);
 
     final profile = await _auth.fetchCurrentUserProfile();
     final enrolled =
@@ -180,45 +184,158 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F6FA),
+      backgroundColor: const Color(0xFFF3F1FB),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 14, 24, 18),
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const SizedBox(height: 12),
-              const SizedBox(
-                height: 93,
-                width: 167,
-                child: MindSyncLogo(height: 93, width: 167),
-              ),
-              const SizedBox(height: 6),
-              const Text(
-                'The Sanctuary for your Mind',
-                style: TextStyle(fontSize: 17, color: Color(0xFF7A7C89)),
-              ),
-              const SizedBox(height: 22),
-              _AuthField(hint: 'Email Address', controller: _emailController),
-              const SizedBox(height: 14),
-              _AuthField(
-                hint: 'Password',
-                controller: _passwordController,
-                obscure: true,
+              const SizedBox(height: 8),
+
+              // ---------- CENTERED LOGO (same size as Signup) ----------
+              const Center(
+                child: SizedBox(
+                  height: 78,
+                  width: 160,
+                  child: MindSyncLogo(height: 78, width: 160),
+                ),
               ),
               const SizedBox(height: 10),
+              const Center(
+                child: Text(
+                  'The Sanctuary for your Mind',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    color: Color(0xFF6D6F7A),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // ---------- WELCOME HEADER ----------
+              const Padding(
+                padding: EdgeInsets.only(left: 4),
+                child: Text(
+                  'Welcome back',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF1F2330),
+                    letterSpacing: -0.4,
+                    height: 1.15,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Padding(
+                padding: EdgeInsets.only(left: 4),
+                child: Text(
+                  'Sign in to continue your journey',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    color: Color(0xFF6D6F7A),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // ---------- ACCOUNT DETAILS HEADER ----------
+              const Padding(
+                padding: EdgeInsets.only(left: 4, bottom: 10),
+                child: Text(
+                  'ACCOUNT DETAILS',
+                  style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 1.3,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF6F39E8),
+                  ),
+                ),
+              ),
+
+              // ---------- EMAIL ----------
+              _AuthField(
+                label: 'EMAIL',
+                hint: 'you@example.com',
+                icon: Icons.mail_outline_rounded,
+                controller: _emailController,
+                keyboardType: TextInputType.emailAddress,
+              ),
+              const SizedBox(height: 12),
+
+              // ---------- PASSWORD ----------
+              _AuthField(
+                label: 'PASSWORD',
+                hint: 'Enter your password',
+                icon: Icons.lock_outline_rounded,
+                controller: _passwordController,
+                obscure: _obscurePassword,
+                trailing: IconButton(
+                  splashRadius: 20,
+                  icon: Icon(
+                    _obscurePassword
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
+                    size: 20,
+                    color: const Color(0xFF9B9EA9),
+                  ),
+                  onPressed: () =>
+                      setState(() => _obscurePassword = !_obscurePassword),
+                ),
+              ),
+              const SizedBox(height: 6),
+
+              // ---------- REMEMBER ME + FORGOT ----------
               Row(
                 children: [
-                  SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: Checkbox(
-                      value: _rememberMe,
-                      onChanged: (v) =>
-                          setState(() => _rememberMe = v ?? false),
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () =>
+                          setState(() => _rememberMe = !_rememberMe),
+                      borderRadius: BorderRadius.circular(10),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 6,
+                        ),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: Checkbox(
+                                value: _rememberMe,
+                                onChanged: (v) =>
+                                    setState(() => _rememberMe = v ?? false),
+                                activeColor: const Color(0xFF6F39E8),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(5),
+                                ),
+                                side: const BorderSide(
+                                  color: Color(0xFFB8BCC8),
+                                  width: 1.5,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Text(
+                              'Remember me',
+                              style: TextStyle(
+                                fontSize: 13.5,
+                                color: Color(0xFF5F6270),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  const Text('Remember me', style: TextStyle(fontSize: 14.5)),
                   const Spacer(),
                   TextButton(
                     onPressed: () {
@@ -232,44 +349,55 @@ class _LoginScreenState extends State<LoginScreen> {
                       'Forgot password?',
                       style: TextStyle(
                         color: Color(0xFF6F39E8),
-                        fontWeight: FontWeight.w700,
-                        fontSize: 14.5,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13.5,
                       ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 14),
+
+              // ---------- LOGIN BUTTON ----------
               SizedBox(
                 width: double.infinity,
-                height: 58,
+                height: 54,
                 child: ElevatedButton(
                   onPressed: _loading ? null : _login,
                   style: ElevatedButton.styleFrom(
-                    elevation: 8,
-                    shadowColor: const Color(0x4D6F39E8),
+                    elevation: 0,
                     foregroundColor: Colors.white,
                     backgroundColor: const Color(0xFF6F39E8),
+                    disabledBackgroundColor: const Color(0xFFD0C7EE),
+                    disabledForegroundColor: Colors.white70,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30),
+                      borderRadius: BorderRadius.circular(28),
                     ),
                   ),
                   child: Text(
                     _loading ? 'Logging in...' : 'Login',
                     style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.3,
                     ),
                   ),
                 ),
               ),
-              const SizedBox(height: 10),
+
+              const SizedBox(height: 14),
+
+              // ---------- SIGNUP LINK ----------
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   const Text(
                     "Don't have an account?",
-                    style: TextStyle(fontSize: 13, color: Color(0xFF727583)),
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Color(0xFF666A79),
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                   TextButton(
                     onPressed: () {
@@ -281,42 +409,48 @@ class _LoginScreenState extends State<LoginScreen> {
                       'Create account',
                       style: TextStyle(
                         color: Color(0xFF6F39E8),
-                        fontWeight: FontWeight.w700,
-                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13.5,
                       ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 24),
-              const Row(
+
+              const SizedBox(height: 20),
+
+              // ---------- DIVIDER ----------
+              Row(
                 children: [
-                  Expanded(child: Divider(color: Color(0xFFDCDEE4))),
+                  const Expanded(child: Divider(color: Color(0xFFE0DEEA))),
                   Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
                     child: Text(
                       'OR CONTINUE WITH',
-                      style: TextStyle(color: Color(0xFF9D9FAA), fontSize: 12),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: const Color(0xFF6F7382),
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.0,
+                      ),
                     ),
                   ),
-                  Expanded(child: Divider(color: Color(0xFFDCDEE4))),
+                  const Expanded(child: Divider(color: Color(0xFFE0DEEA))),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
+
+              // ---------- GOOGLE ----------
               _SocialButton(
                 title: 'Continue with Google',
                 background: Colors.white,
                 textColor: const Color(0xFF2A2D3A),
                 icon: Icons.g_mobiledata_rounded,
-                onTap: _loginWithGoogle,
+                onTap: _loading ? null : _loginWithGoogle,
               ),
-              const SizedBox(height: 12),
-              _SocialButton(
-                title: 'Apple',
-                background: const Color(0xFF131923),
-                textColor: Colors.white,
-              ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 10),
+
+              const SizedBox(height: 8),
             ],
           ),
         ),
@@ -325,35 +459,90 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Reusable widgets
+// ---------------------------------------------------------------------------
+
 class _AuthField extends StatelessWidget {
   const _AuthField({
+    required this.label,
     required this.hint,
     required this.controller,
+    this.icon,
     this.obscure = false,
+    this.keyboardType,
+    this.trailing,
   });
+
+  final String label;
   final String hint;
   final TextEditingController controller;
+  final IconData? icon;
   final bool obscure;
+  final TextInputType? keyboardType;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      obscureText: obscure,
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: const TextStyle(color: Color(0xFF9093A1), fontSize: 15),
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 20,
-          vertical: 16,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xFF6F39E8),
+              letterSpacing: 1.1,
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
         ),
-        filled: true,
-        fillColor: const Color(0xFFF0F2F6),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(22),
-          borderSide: BorderSide.none,
+        TextField(
+          controller: controller,
+          obscureText: obscure,
+          keyboardType: keyboardType,
+          style: const TextStyle(
+            fontSize: 14.5,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF1F2330),
+          ),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(
+              color: Color(0xFF9B9EA9),
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+            prefixIcon: icon != null
+                ? Icon(icon, size: 20, color: const Color(0xFF9B9EA9))
+                : null,
+            suffixIcon: trailing,
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 16,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: const BorderSide(color: Color(0xFFE7E4F1)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: const BorderSide(color: Color(0xFFE7E4F1)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: const BorderSide(
+                color: Color(0xFF6F39E8),
+                width: 1.6,
+              ),
+            ),
+          ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -379,28 +568,28 @@ class _SocialButton extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(27),
+        borderRadius: BorderRadius.circular(16),
         child: Container(
           width: double.infinity,
           height: 54,
           decoration: BoxDecoration(
             color: background,
-            borderRadius: BorderRadius.circular(27),
-            border: Border.all(color: const Color(0xFFE4E5EC)),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE3E4EB)),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               if (icon != null) ...[
-                Icon(icon, color: textColor, size: 24),
-                const SizedBox(width: 10),
+                Icon(icon, color: textColor, size: 26),
+                const SizedBox(width: 8),
               ],
               Text(
                 title,
                 style: TextStyle(
                   color: textColor,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             ],

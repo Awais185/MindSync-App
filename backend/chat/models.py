@@ -258,30 +258,17 @@ def _get_jit_video():
 
 
 def predict_emotion_pil_image(pil_image, *, for_video: bool = False) -> tuple[str, float]:
-    """
-    Single-frame prediction. Used by image API and by video_model frame loop.
-    Priority for video: video_model.pth > image_model.pth > HF pipeline.
-    Priority for image: image_model.pth > HF pipeline.
-    """
+    """Single-frame mood/emotion — custom ResNet18 ensemble only."""
     from PIL import Image
 
     if not isinstance(pil_image, Image.Image):
         raise TypeError("Expected PIL.Image")
 
-    if for_video:
-        jv, lv = _get_jit_video()
-        if jv is not None:
-            return _predict_jit(jv, pil_image, lv)
-        ji, li = _get_jit_image()
-        if ji is not None:
-            return _predict_jit(ji, pil_image, li)
+    from face_detection.adult_emotion_inference import get_adult_emotion_predictor
 
-    else:
-        ji, li = _get_jit_image()
-        if ji is not None:
-            return _predict_jit(ji, pil_image, li)
-
-    return _hf_classify_pil_image(pil_image)
+    out = get_adult_emotion_predictor().predict_pil(pil_image)
+    label = str(out.get("class") or out.get("prediction") or "Unknown")
+    return label, float(out.get("confidence") or 0.0)
 
 
 def _hf_classify_pil_image(pil_image) -> tuple[str, float]:

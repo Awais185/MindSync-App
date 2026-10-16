@@ -1,0 +1,10 @@
+,value
+rows_raw,223652
+cols_raw,38
+rows_dropped_missing_class,0
+rows_dropped_missing_feature,5
+negative_intensity_values,0
+intensity_gt_5,0
+presence_not_binary,0
+classes_found,"[0, 1, 2, 3]"
+rows_used,223647

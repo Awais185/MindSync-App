@@ -13,12 +13,28 @@ class UserProfile(models.Model):
         (OTHER, 'Other'),
     ]
 
+    AGE_4_15 = '4 - 15 years'
+    AGE_16_30 = '16 - 30 years'
+    AGE_30_PLUS = '30+ years'
+    AGE_RANGE_CHOICES = [
+        (AGE_4_15, '4 - 15 years'),
+        (AGE_16_30, '16 - 30 years'),
+        (AGE_30_PLUS, '30+ years'),
+    ]
+
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     profession = models.CharField(
         max_length=20,
         choices=PROFESSION_CHOICES,
         blank=True,
         default=OTHER,
+    )
+    age_range = models.CharField(
+        max_length=32,
+        choices=AGE_RANGE_CHOICES,
+        blank=True,
+        default='',
+        help_text='Used to gate adult ML models in background (16+ only).',
     )
     face_enrolled = models.BooleanField(default=False)
     face_image = models.ImageField(upload_to='face_enrollments/', blank=True, null=True)
@@ -155,7 +171,7 @@ class BlockedAppPackage(models.Model):
         related_name='blocked_app_packages',
     )
     package_name = models.CharField(max_length=200, db_index=True)
-    blocked = models.BooleanField(default=True)
+    blocked = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -408,3 +424,53 @@ class UserMoodWindow(models.Model):
 
     def __str__(self):
         return f'{self.user_id} from {self.window_start}'
+
+
+class UserNotification(models.Model):
+    """In-app notification for a user (hard-deleted via API)."""
+
+    EVENT_WELCOME = 'welcome'
+    EVENT_WEEKLY_REPORT = 'weekly_report'
+    EVENT_PASSWORD_RESET_REQUESTED = 'password_reset_requested'
+    EVENT_PASSWORD_CHANGED = 'password_changed'
+    EVENT_LOW_WELLBEING = 'low_wellbeing'
+
+    EVENT_CHOICES = [
+        (EVENT_WELCOME, 'Welcome'),
+        (EVENT_WEEKLY_REPORT, 'Weekly report'),
+        (EVENT_PASSWORD_RESET_REQUESTED, 'Password reset requested'),
+        (EVENT_PASSWORD_CHANGED, 'Password changed'),
+        (EVENT_LOW_WELLBEING, 'Low wellbeing'),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='notifications',
+    )
+    event_type = models.CharField(max_length=40, choices=EVENT_CHOICES, db_index=True)
+    title = models.CharField(max_length=200)
+    body = models.TextField()
+    action_route = models.CharField(max_length=80, blank=True, default='')
+    action_label = models.CharField(max_length=80, blank=True, default='')
+    priority = models.PositiveSmallIntegerField(default=0)
+    is_read = models.BooleanField(default=False, db_index=True)
+    dedupe_key = models.CharField(max_length=120, blank=True, default='', db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=('user', 'dedupe_key'),
+                condition=~models.Q(dedupe_key=''),
+                name='uniq_user_notification_dedupe',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['user', 'is_read']),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id} {self.event_type} {self.title[:40]}'

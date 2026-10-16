@@ -335,10 +335,13 @@ class DailyUsageAPIView(APIView):
                 'Your screen time today is high. Try a short break, lower brightness, '
                 'or schedule app limits in system settings.'
             )
+        yesterday = today - timedelta(days=1)
+        yesterday_total = day_total_seconds(request.user, yesterday)
         return Response(
             {
                 'date': today.isoformat(),
                 'total_seconds': total,
+                'yesterday_total_seconds': yesterday_total,
                 'avg_seconds': int(avg_seconds),
                 'apps': apps,
                 'chart_bars_7': chart_bars_7,
@@ -528,7 +531,16 @@ class WellnessDashboardAPIView(APIView):
         except ValueError:
             days = 7
         days = max(1, min(days, 30))
-        return Response(build_wellness_dashboard(request.user, days=days))
+        payload = build_wellness_dashboard(request.user, days=days)
+        try:
+            from users.services.notification_service import notify_low_wellbeing
+
+            score = int(payload.get('wellbeing_score') or 0)
+            if score > 0 and score < 40:
+                notify_low_wellbeing(request.user, score)
+        except Exception:
+            pass
+        return Response(payload)
 
 
 class DynamicWeeklySummaryAPIView(APIView):

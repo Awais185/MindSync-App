@@ -20,7 +20,7 @@ abstract final class LateNightSleepColors {
   }
 }
 
-/// Device-side late-night screen activity and estimated sleep (22:00–05:00).
+/// Device-side late-night screen activity and estimated sleep (22:00–06:00).
 class LateNightSleepSnapshot {
   const LateNightSleepSnapshot({
     this.sleepTonightMinutes = 0,

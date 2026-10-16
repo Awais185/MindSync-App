@@ -40,6 +40,10 @@ def _account_full_name_for_reset(user: User) -> str:
 
 class SignupSerializer(serializers.ModelSerializer):
     profession = serializers.ChoiceField(choices=UserProfile.PROFESSION_CHOICES)
+    age_range = serializers.ChoiceField(
+        choices=UserProfile.AGE_RANGE_CHOICES,
+        required=True,
+    )
     face_image = serializers.ImageField(required=False)
     email = serializers.EmailField(
         required=True,
@@ -48,7 +52,16 @@ class SignupSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('username', 'email', 'password', 'first_name', 'last_name', 'profession', 'face_image')
+        fields = (
+            'username',
+            'email',
+            'password',
+            'first_name',
+            'last_name',
+            'profession',
+            'age_range',
+            'face_image',
+        )
         extra_kwargs = {
             'password': {'write_only': True},
             'first_name': {'required': True},
@@ -58,6 +71,7 @@ class SignupSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         profession = validated_data.pop('profession')
+        age_range = validated_data.pop('age_range')
         face_image = validated_data.pop('face_image', None)
 
         user = User.objects.create_user(**validated_data)
@@ -65,6 +79,7 @@ class SignupSerializer(serializers.ModelSerializer):
         profile = UserProfile.objects.create(
             user=user,
             profession=profession,
+            age_range=age_range,
             face_enrolled=bool(face_image),
             face_image=face_image,
         )
@@ -75,6 +90,13 @@ class SignupSerializer(serializers.ModelSerializer):
                 ensure_profile_embedding(profile)
             except Exception:
                 pass
+
+        try:
+            from users.services.notification_service import notify_welcome
+
+            notify_welcome(user)
+        except Exception:
+            pass
 
         return user
 
@@ -151,6 +173,12 @@ class PasswordChangeSerializer(serializers.Serializer):
         user = self.context['request'].user
         user.set_password(self.validated_data['new_password'])
         user.save()
+        try:
+            from users.services.notification_service import notify_password_changed
+
+            notify_password_changed(user)
+        except Exception:
+            pass
         return user
 
 
@@ -180,7 +208,7 @@ class PasswordResetSerializer(serializers.Serializer):
             )
 
         submitted_username = attrs['username'].strip()
-        if user.username != submitted_username:
+        if user.username.casefold() != submitted_username.casefold():
             raise serializers.ValidationError(
                 {'username': ['Username does not match this account.']}
             )
@@ -207,8 +235,23 @@ class PasswordResetSerializer(serializers.Serializer):
 
     def save(self):
         user = self.validated_data['user']
+        try:
+            from users.services.notification_service import (
+                notify_password_changed,
+                notify_password_reset_requested,
+            )
+
+            notify_password_reset_requested(user)
+        except Exception:
+            pass
         user.set_password(self.validated_data['new_password'])
         user.save()
+        try:
+            from users.services.notification_service import notify_password_changed
+
+            notify_password_changed(user)
+        except Exception:
+            pass
         return user
 
 
@@ -412,6 +455,7 @@ class GoogleAuthSerializer(serializers.Serializer):
                         ),
                     })
 
+        google_user_created = False
         if user is None:
             user = User.objects.create(
                 username=_unique_username_from_email(email, profile.get('sub') or 'google-user'),
@@ -427,6 +471,7 @@ class GoogleAuthSerializer(serializers.Serializer):
                 face_enrolled=False,
                 google_auth=True,
             )
+            google_user_created = True
         else:
             if not user.first_name and first_name:
                 user.first_name = first_name
@@ -450,10 +495,19 @@ class GoogleAuthSerializer(serializers.Serializer):
                 profile_obj.save(update_fields=['google_auth'])
 
         attrs['user'] = user
+        attrs['google_user_created'] = google_user_created
         return attrs
 
     def create(self, validated_data):
-        return validated_data['user']
+        user = validated_data['user']
+        if validated_data.get('google_user_created'):
+            try:
+                from users.services.notification_service import notify_welcome
+
+                notify_welcome(user)
+            except Exception:
+                pass
+        return user
 
 
 class CommunityPostSerializer(serializers.ModelSerializer):

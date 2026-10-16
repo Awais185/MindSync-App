@@ -1,4 +1,5 @@
 from django.contrib import admin
+
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
 
@@ -20,6 +21,7 @@ from .models import (
     TrustedContact,
     AppBranding,
     SubscriptionPlan,
+    UserNotification,
 )
 
 class UserProfileInline(admin.StackedInline):
@@ -256,3 +258,11 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
     list_filter = ('is_active', 'is_featured')
     search_fields = ('title', 'slug', 'subtitle', 'badge')
     ordering = ('sort_order', 'id')
+
+
+@admin.register(UserNotification)
+class UserNotificationAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'event_type', 'title', 'is_read', 'created_at')
+    list_filter = ('event_type', 'is_read')
+    search_fields = ('title', 'body', 'user__email', 'user__username')
+    readonly_fields = ('created_at',)

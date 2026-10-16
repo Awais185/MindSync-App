@@ -1,0 +1,12 @@
+{
+  "python": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+  "platform": "Linux-6.6.122+-x86_64-with-glibc2.39",
+  "numpy": "2.1.3",
+  "pandas": "2.2.3",
+  "lightgbm": "4.6.0",
+  "seed": 42,
+  "block_frames": 5000,
+  "n_splits": 5,
+  "n_repeats": 3,
+  "quick_mode": false
+}

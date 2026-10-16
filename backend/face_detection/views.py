@@ -2,9 +2,11 @@ import logging
 import os
 import tempfile
 import time
+import uuid
 
 from django.conf import settings
 from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.utils import timezone
 from PIL import Image
 from rest_framework import parsers, permissions, response, status, views
@@ -14,7 +16,6 @@ from tracking.models import ScreenTimeSession
 from chat.video_model import analyze_video_file_path as chat_analyze_video_file_path
 
 from .emotion_models import predict_image_pil, predict_video_path
-from .emotion_score_fallback import merge_emotion_fallback, openface_results_weak
 from .face_verification_service import DEFAULT_THRESHOLD
 from .profile_face_verify import verify_probe_for_user
 from .models import FaceSnapshot, MentalHealthResult
@@ -333,6 +334,11 @@ class FaceBehaviorAnalyzeView(views.APIView):
             "false",
             "no",
         }
+        persist = str(data.get("persist") or "true").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+        }
 
         source_app_name = (data.get("source_app_name") or "").strip()[:120]
         source_package_name = (data.get("source_package_name") or "").strip()[:200]
@@ -404,6 +410,7 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     include_tracked_video=include_media,
                     fast_mode=pipeline_fast,
                     prepared_video_path=prepared_path,
+                    use_depression_model=True,
                 )
             else:
                 logger.info(
@@ -429,46 +436,39 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     )
             scores = dict(analysis.scores) if isinstance(analysis.scores, dict) else {}
 
-            deepface_video = {"summary": {}, "dominant": None, "frame_count": 0}
-            chat_video: dict = {}
-            if include_deepface and openface_results_weak(scores):
-                try:
-                    deepface_video = predict_video_path(
-                        prepared_path,
-                        max_frames=6,
-                        sample_fps=2.0,
-                    )
-                except Exception as deepface_exc:
-                    logger.warning(
-                        "behavior/analyze deepface fallback failed: %s",
-                        deepface_exc,
-                    )
+            mood: dict = {}
+            try:
+                from .adult_emotion_inference import predict_video_path as adult_emotion_video
 
-            if openface_results_weak(scores):
-                scores = merge_emotion_fallback(
-                    scores,
-                    deepface_video=deepface_video,
-                    chat_video=chat_video,
+                mood = adult_emotion_video(
+                    prepared_path,
+                    max_frames=4,
+                    sample_fps=0.35,
                 )
-                analysis = OpenFaceAnalysisResult(
-                    scores=scores,
-                    peak_timestamps=analysis.peak_timestamps,
-                    face_visibility_ratio=float(
-                        scores.get("face_visibility_ratio")
-                        or analysis.face_visibility_ratio
+            except Exception as mood_exc:
+                logger.warning("behavior/analyze emotion ensemble failed: %s", mood_exc)
+                mood = {"error": "emotion_model_failed", "detail": str(mood_exc)[:300]}
+
+            depression_payload = dict(scores.get("depression_model") or {})
+            if not depression_payload and not openface_host:
+                depression_payload = {
+                    "error": "openface_unavailable",
+                    "message": (
+                        "Depression screening needs OpenFace on the server. "
+                        "Emotion results are still available."
                     ),
-                    au_summary=scores.get("au_summary")
-                    if isinstance(scores.get("au_summary"), list)
-                    else analysis.au_summary,
-                    behavioral_insights=scores.get("behavioral_insights")
-                    if isinstance(scores.get("behavioral_insights"), list)
-                    else analysis.behavioral_insights,
-                    recommendations=scores.get("recommendations")
-                    if isinstance(scores.get("recommendations"), list)
-                    else analysis.recommendations,
-                    tracked_video_bytes=analysis.tracked_video_bytes,
-                    tracked_video_ext=analysis.tracked_video_ext,
+                }
+            if scores.get("depression_score") is not None:
+                depression_payload.setdefault(
+                    "depression_score", int(scores.get("depression_score") or 0)
                 )
+                depression_payload.setdefault(
+                    "stress_score", int(scores.get("stress_score") or 0)
+                )
+                depression_payload.setdefault(
+                    "anxiety_score", int(scores.get("anxiety_score") or 0)
+                )
+
             dominant_state = str(scores.get("dominant_state") or "neutral").strip().lower()
 
             openface_summary = {
@@ -484,31 +484,41 @@ class FaceBehaviorAnalyzeView(views.APIView):
                 else [],
             }
 
-            result = MentalHealthResult.objects.create(
-                user=request.user,
-                stress_score=int(scores.get("stress_score") or 0),
-                anxiety_score=int(scores.get("anxiety_score") or 0),
-                depression_score=int(scores.get("depression_score") or 0),
-                dominant_state=dominant_state,
-                source_type=source_type,
-                scan_type=scan_type,
-                behavioral_insights=analysis.behavioral_insights,
-                reaction_app_name=source_app_name,
-                reaction_package_name=source_package_name,
-                openface_summary=openface_summary,
-            )
-            if include_media and analysis.tracked_video_bytes:
-                result.analyzed_video.save(
-                    f"openface_{result.id}{analysis.tracked_video_ext or '.avi'}",
-                    ContentFile(analysis.tracked_video_bytes),
-                    save=True,
+            result = None
+            analyzed_video_url = ""
+            if persist:
+                result = MentalHealthResult.objects.create(
+                    user=request.user,
+                    stress_score=int(scores.get("stress_score") or 0),
+                    anxiety_score=int(scores.get("anxiety_score") or 0),
+                    depression_score=int(scores.get("depression_score") or 0),
+                    dominant_state=dominant_state,
+                    source_type=source_type,
+                    scan_type=scan_type,
+                    behavioral_insights=analysis.behavioral_insights,
+                    reaction_app_name=source_app_name,
+                    reaction_package_name=source_package_name,
+                    openface_summary=openface_summary,
+                )
+                if include_media and analysis.tracked_video_bytes:
+                    result.analyzed_video.save(
+                        f"openface_{result.id}{analysis.tracked_video_ext or '.avi'}",
+                        ContentFile(analysis.tracked_video_bytes),
+                        save=True,
+                    )
+                analyzed_video_url = _absolute_media_url(request, result.analyzed_video)
+            elif include_media and analysis.tracked_video_bytes:
+                analyzed_video_url = _save_ephemeral_analyzed_video(
+                    request,
+                    analysis.tracked_video_bytes,
+                    analysis.tracked_video_ext or ".mp4",
                 )
 
             # Extract top 2–3 peak frames as expiring snapshots
             created_snapshots = []
             expires_at = default_snapshot_expiry()
             elapsed_before_snaps = time.perf_counter() - started_at
-            if include_media and elapsed_before_snaps < 32.0:
+            if persist and include_media and elapsed_before_snaps < 32.0:
                 snapshot_paths = extract_snapshots(
                     input_video_path=prepared_path or tmp_path,
                     timestamps=analysis.peak_timestamps,
@@ -540,25 +550,33 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     except Exception:
                         continue
 
+            stress_i = int(scores.get("stress_score") or 0)
+            anxiety_i = int(scores.get("anxiety_score") or 0)
+            depression_i = int(scores.get("depression_score") or 0)
+            emotion_summary = mood.get("summary") if isinstance(mood.get("summary"), dict) else {}
             return response.Response(
                 {
-                    "id": result.id,
-                    "timestamp": result.timestamp.isoformat(),
-                    "source_type": result.source_type,
-                    "scan_type": result.scan_type,
-                    "stress_score": result.stress_score,
-                    "anxiety_score": result.anxiety_score,
-                    "depression_score": result.depression_score,
-                    "dominant_state": result.dominant_state,
-                    "overall_severity_score": max(
-                        result.stress_score,
-                        result.anxiety_score,
-                        result.depression_score,
+                    "id": result.id if result else None,
+                    "persisted": persist,
+                    "timestamp": (
+                        result.timestamp.isoformat()
+                        if result
+                        else timezone.now().isoformat()
                     ),
+                    "source_type": source_type,
+                    "scan_type": scan_type,
+                    "stress_score": stress_i,
+                    "anxiety_score": anxiety_i,
+                    "depression_score": depression_i,
+                    "dominant_state": dominant_state,
+                    "overall_severity_score": max(stress_i, anxiety_i, depression_i),
+                    "mood": mood,
+                    "depression": depression_payload,
+                    "mood_saved": False,
                     "score_breakdown": {
-                        "stress": result.stress_score,
-                        "anxiety": result.anxiety_score,
-                        "depression": result.depression_score,
+                        "stress": stress_i,
+                        "anxiety": anxiety_i,
+                        "depression": depression_i,
                         "dominant_states": scores.get("dominant_states") or [],
                         "max_score": int(scores.get("max_score") or 0),
                     },
@@ -571,22 +589,23 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     "behavioral_insights": analysis.behavioral_insights,
                     "au_summary": analysis.au_summary,
                     "recommendations": analysis.recommendations,
-                    "analyzed_video_url": _absolute_media_url(request, result.analyzed_video),
+                    "analyzed_video_url": analyzed_video_url,
                     "peak_snapshots": created_snapshots,
                     "fast_mode": fast_mode,
                     "pipeline_budget_40s": True,
                     "warmup_status": warmup_status,
                     "media_included": include_media,
                     "processing_time_ms": int((time.perf_counter() - started_at) * 1000),
-                    "deepface_emotion_summary": deepface_video.get("summary") or {},
-                    "deepface_dominant_emotion": deepface_video.get("dominant"),
-                    "deepface_frames_analyzed": int(deepface_video.get("frame_count") or 0),
-                    "web_style_prediction": chat_video.get("prediction"),
-                    "web_style_confidence": chat_video.get("confidence"),
-                    "web_style_summary": chat_video.get("summary") or {},
+                    "deepface_emotion_summary": emotion_summary,
+                    "deepface_dominant_emotion": mood.get("prediction")
+                    or mood.get("dominant"),
+                    "deepface_frames_analyzed": int(mood.get("frame_count") or 0),
+                    "web_style_prediction": mood.get("prediction"),
+                    "web_style_confidence": mood.get("confidence"),
+                    "web_style_summary": emotion_summary,
                     "analysis_source": scores.get("analysis_source")
                     or ("openface" if openface_host else "au_video_tracker"),
-                    "pipeline": "unified_openface_v1",
+                    "pipeline": "unified_openface_dual_model",
                     "pipeline_preprocessing": {
                         "prefer_reencode": True,
                         "scan_type": scan_type,
@@ -596,9 +615,9 @@ class FaceBehaviorAnalyzeView(views.APIView):
                         else 0.0,
                     },
                     "tracked_video_included": bool(analysis.tracked_video_bytes),
-                    "reaction_app_name": result.reaction_app_name,
-                    "reaction_package_name": result.reaction_package_name,
-                    "openface_summary": result.openface_summary or {},
+                    "reaction_app_name": source_app_name,
+                    "reaction_package_name": source_package_name,
+                    "openface_summary": openface_summary,
                 },
                 status=status.HTTP_200_OK,
             )
@@ -636,6 +655,17 @@ def _absolute_media_url(request, file_field) -> str:
     if rel.startswith("http://") or rel.startswith("https://"):
         return rel
     return request.build_absolute_uri(rel)
+
+
+def _save_ephemeral_analyzed_video(request, data: bytes, ext: str) -> str:
+    if not data:
+        return ""
+    rel = f"manual_scans/{uuid.uuid4().hex}{ext or '.mp4'}"
+    default_storage.save(rel, ContentFile(data))
+    url = default_storage.url(rel)
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    return request.build_absolute_uri(url)
 
 
 class FaceBehaviorWarmupView(views.APIView):

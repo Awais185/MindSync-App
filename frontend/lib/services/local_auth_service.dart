@@ -13,6 +13,7 @@ import '../models/app_user.dart';
 import '../models/google_auth_models.dart';
 import '../services/auth_local_sync.dart';
 import '../services/user_session_cache.dart';
+import '../services/auth_api_exception.dart';
 import '../services/database_auth_service.dart';
 import '../services/local_db_service.dart';
 import '../utils/password_hash.dart';
@@ -162,6 +163,7 @@ class LocalAuthService {
     required String firstName,
     required String username,
     required String profession,
+    required String ageRange,
     required String email,
     required String password,
     Uint8List? faceImageBytes,
@@ -177,6 +179,7 @@ class LocalAuthService {
     request.fields['first_name'] = firstName;
     request.fields['last_name'] = '-';
     request.fields['profession'] = _normalizeProfession(profession);
+    request.fields['age_range'] = ageRange.trim();
 
     if (faceImageBytes != null && faceImageBytes.isNotEmpty) {
       request.files.add(
@@ -190,11 +193,13 @@ class LocalAuthService {
 
     await _database.signupMultipart(request);
 
-    final loggedIn = await login(normalizedEmail, password);
-    if (loggedIn == null) {
-      throw Exception('Account created, but login failed. Please try again.');
+    try {
+      return await login(normalizedEmail, password);
+    } on AuthApiException catch (e) {
+      throw Exception(
+        'Account created, but login failed: ${e.message}',
+      );
     }
-    return loggedIn;
   }
 
   Future<void> resetPasswordWithIdentity({
@@ -221,47 +226,59 @@ class LocalAuthService {
           )
           .timeout(const Duration(seconds: 20));
     } on Exception {
-      throw Exception(
-        'Unable to connect to backend. Set BACKEND_BASE_URL to your running API host.',
+      throw AuthApiException(
+        'Unable to connect to backend at ${ApiConfig.baseUrl}. '
+        'Start the server and check adb reverse / Wi‑Fi.',
       );
     }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       if (response.statusCode >= 500) {
-        throw Exception('Server error. Please try again in a moment.');
+        throw AuthApiException('Server error. Please try again in a moment.');
       }
-      throw Exception(_extractErrorMessage(response.body));
+      throw AuthApiException(_extractErrorMessage(response.body));
     }
 
-    final loggedIn = await login(normalizedEmail, newPassword);
-    if (loggedIn == null) {
+    try {
+      await login(normalizedEmail, newPassword);
+    } on AuthApiException {
       throw Exception('Password updated. Please log in with your new password.');
     }
   }
 
   /// Login: search Django SQL database first (existing accounts), then device cache if offline.
-  Future<LocalAuthUser?> login(String email, String password) async {
+  Future<LocalAuthUser> login(String email, String password) async {
     final normalized = email.trim().toLowerCase();
     final rawInput = email.trim();
 
     try {
-      final backend = await _loginViaDatabase(rawInput, password);
-      if (backend != null) return backend;
-      return null;
+      return await _loginViaDatabase(rawInput, password);
+    } on AuthApiException catch (e) {
+      if (!e.isInvalidCredentials) {
+        rethrow;
+      }
+      await _localDb.ensureMigrated();
+      final offline = await _tryLocalLogin(normalized, password) ??
+          await _tryLocalLogin(rawInput, password);
+      if (offline != null) return offline;
+      rethrow;
     } on Exception catch (e) {
       final msg = e.toString();
       if (!msg.contains('Cannot reach MindSync server')) {
         rethrow;
       }
       await _localDb.ensureMigrated();
-      final offline = await _tryLocalLogin(normalized, password);
+      final offline = await _tryLocalLogin(normalized, password) ??
+          await _tryLocalLogin(rawInput, password);
       if (offline != null) return offline;
       rethrow;
     }
   }
 
-  Future<LocalAuthUser?> _tryLocalLogin(String email, String password) async {
-    final record = await _localDb.getUserByEmail(email);
+  Future<LocalAuthUser?> _tryLocalLogin(String identifier, String password) async {
+    final trimmed = identifier.trim();
+    var record = await _localDb.getUserByEmail(trimmed.toLowerCase());
+    record ??= await _localDb.getUserByUsername(trimmed);
     if (record == null) return null;
     if (record.isGoogleAccount) return null;
 
@@ -276,11 +293,13 @@ class LocalAuthService {
     await _setLocalSession(record.user.uid);
     await _persistProfileFromAppUser(record.user);
     unawaited(UserSessionCache.onUserSessionReady());
-    debugPrint('LocalAuthService: login from local SQLite ($email)');
+    debugPrint(
+      'LocalAuthService: login from local SQLite (${record.user.email})',
+    );
     return _toLocalAuthUser(record.user);
   }
 
-  Future<LocalAuthUser?> _loginViaDatabase(
+  Future<LocalAuthUser> _loginViaDatabase(
     String emailOrUsername,
     String password,
   ) async {
@@ -288,7 +307,6 @@ class LocalAuthService {
       emailOrUsername: emailOrUsername,
       password: password,
     );
-    if (body == null) return null;
 
     final user = body['user'] as Map<String, dynamic>? ?? const {};
     final email = (user['email'] as String?) ?? emailOrUsername;
@@ -296,7 +314,13 @@ class LocalAuthService {
     debugPrint(
       'LocalAuthService: login OK from Django SQL DB — ${user['id']} $email',
     );
-    return _persistAuthResponse(body, fallbackEmail: email);
+    final session = await _persistAuthResponse(body, fallbackEmail: email);
+    if (session == null) {
+      throw AuthApiException(
+        'Login succeeded but the app could not save your session. Try again.',
+      );
+    }
+    return session;
   }
 
   Future<GoogleSignInCredentials> _signInWithGoogleUi() async {
@@ -812,9 +836,14 @@ class LocalAuthService {
   }) async {
     await UserSessionCache.onUserSessionStarting();
     final user = body['user'] as Map<String, dynamic>? ?? const {};
-    final access = body['access'] as String?;
-    final refresh = body['refresh'] as String?;
-    if (access == null || refresh == null) return null;
+    final access = body['access']?.toString();
+    final refresh = body['refresh']?.toString();
+    if (access == null ||
+        access.isEmpty ||
+        refresh == null ||
+        refresh.isEmpty) {
+      return null;
+    }
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kAccessToken, access);

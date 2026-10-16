@@ -4,11 +4,11 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
 
 import '../../services/behavior_analysis_warmup.dart';
 
 /// Full-screen front-camera recorder for Deep Face Analysis (max 30s).
+/// Returns [XFile] to the caller as soon as recording finalizes (no review step).
 class FaceScanRecordScreen extends StatefulWidget {
   const FaceScanRecordScreen({super.key});
 
@@ -25,9 +25,6 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
   bool _stopInProgress = false;
   int _elapsed = 0;
   Timer? _timer;
-
-  XFile? _recorded;
-  VideoPlayerController? _playback;
   String? _error;
 
   @override
@@ -46,9 +43,9 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
       );
       final controller = CameraController(
         front,
-        ResolutionPreset.high,
+        ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
+        imageFormatGroup: ImageFormatGroup.yuv420,
       );
       await controller.initialize();
       if (!mounted) return;
@@ -65,36 +62,41 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
     }
   }
 
-  Future<void> _disposePlayback() async {
-    await _playback?.dispose();
-    _playback = null;
-    _recorded = null;
-  }
-
   void _cancelRecordingTimer() {
     _timer?.cancel();
     _timer = null;
   }
 
+  Future<bool> _waitForFileReady(XFile file) async {
+    if (kIsWeb) return true;
+    try {
+      final f = File(file.path);
+      for (var i = 0; i < 25; i++) {
+        if (await f.length() >= 24_000) return true;
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+      return await f.length() >= 12_000;
+    } catch (_) {
+      return true;
+    }
+  }
+
   Future<void> _startRecording() async {
     final c = _controller;
-    if (c == null || !c.value.isInitialized || _recording || _stopInProgress) {
+    if (c == null ||
+        !c.value.isInitialized ||
+        _recording ||
+        _stopInProgress) {
       return;
     }
     try {
-      await _disposePlayback();
-      if (!mounted) return;
-      setState(() {});
-
       await c.startVideoRecording();
       if (!mounted) return;
-
       _cancelRecordingTimer();
       setState(() {
         _recording = true;
         _elapsed = 0;
       });
-
       _timer = Timer.periodic(const Duration(seconds: 1), (t) {
         if (!mounted || !_recording || _stopInProgress) {
           t.cancel();
@@ -103,7 +105,7 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
         setState(() => _elapsed += 1);
         if (_elapsed >= _maxDurationSeconds) {
           t.cancel();
-          unawaited(_stopRecording(autoStop: true));
+          unawaited(_stopRecording());
         }
       });
     } catch (e) {
@@ -116,45 +118,12 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
     }
   }
 
-  Future<void> _initPlayback(XFile file) async {
-    await _playback?.dispose();
-    if (!mounted) return;
-    VideoPlayerController ctrl;
-    if (kIsWeb) {
-      ctrl = VideoPlayerController.networkUrl(Uri.parse(file.path));
-    } else {
-      ctrl = VideoPlayerController.file(File(file.path));
-    }
-    try {
-      await ctrl.initialize().timeout(const Duration(seconds: 15));
-    } catch (e) {
-      await ctrl.dispose();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open preview: $e')),
-      );
-      return;
-    }
-    if (!mounted) {
-      await ctrl.dispose();
-      return;
-    }
-    await ctrl.setLooping(true);
-    await ctrl.play();
-    setState(() {
-      _recorded = file;
-      _playback = ctrl;
-    });
-  }
-
-  /// User Stop always wins over the max-duration timer.
-  Future<void> _stopRecording({bool autoStop = false}) async {
+  Future<void> _stopRecording() async {
     if (_stopInProgress) return;
     if (!_recording) return;
 
     _stopInProgress = true;
     _cancelRecordingTimer();
-
     if (mounted) {
       setState(() => _recording = false);
     }
@@ -166,28 +135,21 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
     }
 
     try {
+      await Future<void>.delayed(const Duration(milliseconds: 120));
       XFile? file;
-      if (c.value.isRecordingVideo) {
+      if (c.value.isRecordingVideo || c.value.isRecordingPaused) {
         file = await c.stopVideoRecording();
-      } else if (c.value.isRecordingPaused) {
-        try {
-          file = await c.stopVideoRecording();
-        } catch (_) {
-          // Already finalized on some devices.
-        }
       }
-
       if (!mounted) return;
-      if (file != null) {
-        await _initPlayback(file);
+      if (file != null && await _waitForFileReady(file)) {
+        Navigator.of(context).pop(file);
+        return;
       }
-      if (autoStop && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Auto-stopped at $_maxDurationSeconds seconds.'),
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Recording did not save. Try again.'),
+        ),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -199,47 +161,9 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
     }
   }
 
-  Future<void> _discardRecordingAndRetry() async {
-    await _disposePlayback();
-    if (!mounted) return;
-    setState(() {
-      _elapsed = 0;
-    });
-  }
-
-  Future<void> _confirmRecording() async {
-    final file = _recorded;
-    if (file == null) return;
-    if (!kIsWeb) {
-      try {
-        final f = File(file.path);
-        for (var i = 0; i < 15; i++) {
-          if (await f.length() >= 32_000) break;
-          await Future<void>.delayed(const Duration(milliseconds: 200));
-        }
-        if (await f.length() < 12_000) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Video is still saving. Wait for preview, then try again.',
-              ),
-            ),
-          );
-          return;
-        }
-      } catch (_) {
-        // Server validates if length check fails.
-      }
-    }
-    if (!mounted) return;
-    Navigator.of(context).pop(file);
-  }
-
   @override
   void dispose() {
     _cancelRecordingTimer();
-    unawaited(_playback?.dispose());
     _controller?.dispose();
     super.dispose();
   }
@@ -247,9 +171,6 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
   @override
   Widget build(BuildContext context) {
     final c = _controller;
-    final playback = _playback;
-    final hasPlayback =
-        playback != null && playback.value.isInitialized && _recorded != null;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -284,47 +205,42 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
           : Stack(
               fit: StackFit.expand,
               children: [
-                if (hasPlayback)
-                  Center(
-                    child: AspectRatio(
-                      aspectRatio: playback.value.aspectRatio,
-                      child: VideoPlayer(playback),
-                    ),
-                  )
-                else
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      final previewSize = c.value.previewSize;
-                      if (previewSize == null) {
-                        return Center(child: CameraPreview(c));
-                      }
-                      return ClipRect(
-                        child: FittedBox(
-                          fit: BoxFit.cover,
-                          alignment: Alignment.center,
-                          child: SizedBox(
-                            width: previewSize.height,
-                            height: previewSize.width,
-                            child: CameraPreview(c),
-                          ),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final previewSize = c.value.previewSize;
+                    if (previewSize == null) {
+                      return Center(child: CameraPreview(c));
+                    }
+                    return ClipRect(
+                      child: FittedBox(
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                        child: SizedBox(
+                          width: previewSize.height,
+                          height: previewSize.width,
+                          child: CameraPreview(c),
                         ),
-                      );
-                    },
-                  ),
-                if (!hasPlayback)
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.black.withValues(alpha: 0.35),
-                          Colors.transparent,
-                          Colors.black.withValues(alpha: 0.75),
-                        ],
                       ),
+                    );
+                  },
+                ),
+                if (_stopInProgress)
+                  const Center(
+                    child: CircularProgressIndicator(color: Colors.white),
+                  ),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withValues(alpha: 0.35),
+                        Colors.transparent,
+                        Colors.black.withValues(alpha: 0.75),
+                      ],
                     ),
                   ),
+                ),
                 SafeArea(
                   child: Column(
                     children: [
@@ -362,7 +278,7 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
                             ],
                           ),
                         )
-                      else if (!hasPlayback)
+                      else if (!_stopInProgress)
                         Text(
                           'Up to $_maxDurationSeconds seconds · front camera',
                           style: TextStyle(
@@ -374,52 +290,14 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
                       const Spacer(),
                       Padding(
                         padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
-                        child: hasPlayback
-                            ? Row(
-                                children: [
-                                  Expanded(
-                                    child: OutlinedButton(
-                                      onPressed: _discardRecordingAndRetry,
-                                      style: OutlinedButton.styleFrom(
-                                        foregroundColor: Colors.white,
-                                        side: const BorderSide(
-                                          color: Colors.white54,
-                                        ),
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 14,
-                                        ),
-                                      ),
-                                      child: const Text('Record again'),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: ElevatedButton(
-                                      onPressed: () =>
-                                          unawaited(_confirmRecording()),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor:
-                                            const Color(0xFF6F39E8),
-                                        foregroundColor: Colors.white,
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 14,
-                                        ),
-                                      ),
-                                      child: const Text('Use this video'),
-                                    ),
-                                  ),
-                                ],
-                              )
-                            : _recording
+                        child: _recording
                             ? SizedBox(
                                 width: 88,
                                 height: 88,
                                 child: ElevatedButton(
                                   onPressed: _stopInProgress
                                       ? null
-                                      : () => unawaited(
-                                            _stopRecording(autoStop: false),
-                                          ),
+                                      : () => unawaited(_stopRecording()),
                                   style: ElevatedButton.styleFrom(
                                     shape: const CircleBorder(),
                                     backgroundColor: const Color(0xFFB71C1C),
@@ -436,7 +314,9 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
                                 width: 88,
                                 height: 88,
                                 child: ElevatedButton(
-                                  onPressed: _startRecording,
+                                  onPressed: _stopInProgress
+                                      ? null
+                                      : _startRecording,
                                   style: ElevatedButton.styleFrom(
                                     shape: const CircleBorder(),
                                     backgroundColor: const Color(0xFF6F39E8),

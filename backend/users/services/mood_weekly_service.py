@@ -97,7 +97,7 @@ def window_bounds(window_start: date) -> tuple[date, date]:
 def _mood_label_from_json(mood: dict | None) -> str:
     if not isinstance(mood, dict):
         return 'Unknown'
-    for key in ('prediction', 'dominant_emotion', 'emotion', 'label'):
+    for key in ('prediction', 'class', 'dominant_emotion', 'emotion', 'label'):
         val = mood.get(key)
         if val:
             return str(val).replace('_', ' ').strip().title()
@@ -225,8 +225,21 @@ def build_weekly_mood_payload(user: User, request=None) -> dict[str, Any]:
         d += timedelta(days=1)
 
     insights = build_mood_insights(scans)
-    has_summary = entry_count >= 3
+    has_summary = entry_count >= 2
     dominant = insights['dominant_mood'] if has_summary else ''
+
+    recent_entries: list[dict[str, Any]] = []
+    for scan in list(reversed(scans[-8:])):
+        media = _absolute_media(request, scan)
+        recent_entries.append(
+            {
+                'id': scan.id,
+                'label': _mood_label_from_json(scan.mood),
+                'time': timezone.localtime(scan.created_at).strftime('%H:%M'),
+                'captured_at': scan.created_at.isoformat(),
+                'media': media[:1],
+            }
+        )
 
     all_labels = [_mood_label_from_json(s.mood) for s in scans]
     all_scores = [_mood_score_from_label(l) for l in all_labels] if all_labels else []
@@ -274,6 +287,7 @@ def build_weekly_mood_payload(user: User, request=None) -> dict[str, Any]:
         'mood_distribution': mood_distribution,
         'graph_series': graph_series,
         'days': days_out,
+        'recent_entries': recent_entries,
         'insights': insights,
         'updated_at': timezone.now().isoformat(),
     }

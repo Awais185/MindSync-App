@@ -9,7 +9,7 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * Tracks late-night screen activity (22:00–05:00) and sleep (continuous screen-off in that window).
+ * Tracks late-night screen activity (22:00–06:00) and sleep (continuous screen-off in that window).
  *
  * - Screen ON during the window → late-night activity (+ per-category when a foreground app is known).
  * - Screen OFF during the window → sleep time.
@@ -285,7 +285,7 @@ object LateNightSleepTracker {
         }
     }
 
-    /** Split at 05:00 and 22:00 local boundaries within (from, to]. */
+    /** Split at 06:00 and 22:00 local boundaries within (from, to]. */
     private fun nextSegmentBoundary(fromMs: Long, toMs: Long): Long {
         val candidates = mutableListOf(toMs)
         val cal = Calendar.getInstance()
@@ -293,7 +293,7 @@ object LateNightSleepTracker {
         cal.set(Calendar.SECOND, 0)
         cal.set(Calendar.MILLISECOND, 0)
         repeat(3) {
-            for (hour in intArrayOf(5, 22)) {
+            for (hour in intArrayOf(6, 22)) {
                 val probe = cal.clone() as Calendar
                 probe.set(Calendar.HOUR_OF_DAY, hour)
                 probe.set(Calendar.MINUTE, 0)
@@ -315,17 +315,17 @@ object LateNightSleepTracker {
         val cal = Calendar.getInstance()
         cal.timeInMillis = ms
         val hour = cal.get(Calendar.HOUR_OF_DAY)
-        return hour >= 22 || hour < 5
+        return hour >= 22 || hour < 6
     }
 
-    /** Night anchor date: 22:00–23:59 → today; 00:00–04:59 → yesterday. */
+    /** Night anchor date: 22:00–23:59 → today; 00:00–05:59 → yesterday. */
     fun nightDateKey(ms: Long): String? {
         val cal = Calendar.getInstance()
         cal.timeInMillis = ms
         val hour = cal.get(Calendar.HOUR_OF_DAY)
         return when {
             hour >= 22 -> dayFmt().format(cal.time)
-            hour < 5 -> {
+            hour < 6 -> {
                 cal.add(Calendar.DAY_OF_YEAR, -1)
                 dayFmt().format(cal.time)
             }
@@ -410,7 +410,7 @@ object LateNightSleepTracker {
         val cal = Calendar.getInstance()
         cal.timeInMillis = nowMs
         val hour = cal.get(Calendar.HOUR_OF_DAY)
-        if (hour in 5 until 22) {
+        if (hour in 6 until 22) {
             cal.add(Calendar.DAY_OF_YEAR, -1)
             return dayFmt().format(cal.time)
         }

@@ -93,6 +93,10 @@ def _apply_face_mood_to_dashboard(payload: dict, user, days: int) -> dict:
             payload['depression_indicator'] = int(round(insights.get('avg_depression') or 0))
     except Exception:
         pass
+    today = timezone.localdate()
+    row = ScreenTime.objects.filter(user=user, date=today).first()
+    payload["sleep_seconds_today"] = int(row.sleep_time) if row else 0
+    payload["late_night_seconds_today"] = int(row.late_night_activity) if row else 0
     return payload
 
 

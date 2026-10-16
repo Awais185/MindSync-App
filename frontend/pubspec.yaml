@@ -80,6 +80,8 @@ flutter:
   assets:
     - assets/dns/
     - assets/images/deep_face_mesh_sample.jpg
+    - assets/images/mindsync_logo.png
+    - assets/images/facial_landmark_portrait.jpg
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

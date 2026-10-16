@@ -1,17 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import '../../services/analytics_data_service.dart';
-import '../../services/feature_permission_service.dart';
-import '../../services/screen_time_service.dart';
-import '../../models/late_night_sleep_snapshot.dart';
-import '../../widgets/late_night_activity_widgets.dart';
+import '../../models/analytics_dashboard_payload.dart';
+import '../../services/analytics_dashboard_service.dart';
 import '../../services/tracking_permissions_gate.dart';
-import '../../ui/components/mind_sync_header.dart';
-import '../../ui/layout/mindsync_layout.dart';
+import '../../utils/mental_health_severity.dart';
 import '../pages/behavioral_insight_detail_screen.dart';
-import '../pages/profile_screen.dart';
-import '../../widgets/permission_banner.dart';
 
 enum AnalyticsRange { week, day, month }
 
@@ -24,37 +18,27 @@ class AnalyticsScreen extends StatefulWidget {
 
 class _AnalyticsScreenState extends State<AnalyticsScreen> {
   AnalyticsRange selected = AnalyticsRange.week;
-  late Future<AnalyticsPayload> _analyticsFuture;
+  late Future<AnalyticsDashboardPayload> _dashboardFuture;
   Timer? _analyticsPoll;
-  late Future<Map<String, dynamic>?> _deviceArchiveFuture =
-      ScreenTimeService.instance.fetchUsageArchive();
 
-  void _refreshDeviceArchive() {
+  void _reloadDashboard() {
     setState(() {
-      _deviceArchiveFuture = ScreenTimeService.instance.fetchUsageArchive();
+      _dashboardFuture = AnalyticsDashboardService.instance.fetch(
+        _rangeKey(selected),
+      );
     });
-  }
-
-  LateNightSleepSnapshot _resolveLateNightForUi({
-    Map<String, dynamic>? archiveMap,
-  }) {
-    final live = ScreenTimeService.instance.snapshot.value.lateNightSleep;
-    final archive = LateNightSleepSnapshot.fromMap(archiveMap);
-    return mergeLateNightSleepSources(live: live, archive: archive);
   }
 
   @override
   void initState() {
     super.initState();
     unawaited(TrackingPermissionsGate.startScreenTimeIfPermitted());
-    _analyticsFuture = AnalyticsDataService.instance.fetch(_rangeKey(selected));
-    _analyticsPoll = Timer.periodic(const Duration(seconds: 12), (_) {
+    _dashboardFuture = AnalyticsDashboardService.instance.fetch(
+      _rangeKey(selected),
+    );
+    _analyticsPoll = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!mounted) return;
-      setState(() {
-        _analyticsFuture =
-            AnalyticsDataService.instance.fetch(_rangeKey(selected));
-      });
-      _refreshDeviceArchive();
+      _reloadDashboard();
     });
   }
 
@@ -67,449 +51,114 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F6FA),
+      backgroundColor: const Color(0xFFF3F1FB),
       body: SafeArea(
+        top: false,
         child: ListView(
-          padding: MindSyncLayout.pagePadding(context, top: 10, bottom: 100),
+          padding: const EdgeInsets.fromLTRB(18, 8, 18, 100),
           children: [
-            MindSyncHeader(
-              onProfileTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                );
-              },
-            ),
-            const SizedBox(height: 14),
-            ValueListenableBuilder<ScreenTimeSnapshot>(
-              valueListenable: ScreenTimeService.instance.snapshot,
-              builder: (_, data, _) {
-                if (!data.usageStatsGranted) {
-                  return PermissionBanner(
-                    title: 'Usage Access Required',
-                    description: 'Analytics require Usage Access to display your screen time history.',
-                    icon: Icons.data_usage,
-                    onAllow: () async {
-                      await FeaturePermissionService.ensureUsageAccess(context);
-                      await ScreenTimeService.instance.refreshNow();
+                  // ---------- Header text ----------
+                  const Text(
+                    'WEEKLY DIGEST & TRENDS',
+                    style: TextStyle(
+                      fontSize: 11,
+                      letterSpacing: 1.4,
+                      color: Color(0xFF6F39E8),
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Focus & Balance',
+                    style: TextStyle(
+                      fontSize: 32,
+                      height: 1.05,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF181A22),
+                      letterSpacing: -0.6,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // ---------- Range switch ----------
+                  _RangeSwitch(
+                    selected: selected,
+                    onChanged: (value) {
+                      selected = value;
+                      _reloadDashboard();
                     },
-                  );
-                }
-                final mon = data.nativeTrackerConfigured;
-                final fg = data.foregroundAppName.trim();
-                return Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
                   ),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(18),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.02),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        mon
-                            ? 'Background monitoring active'
-                            : 'Background monitoring paused',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 14,
-                          color: Color(0xFF181A22),
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        fg.isNotEmpty
-                            ? 'Current: $fg · today ${formatDurationShort(data.daySeconds)}'
-                            : mon
-                                ? 'Tracking continues while you use other apps'
-                                : 'Awaiting data',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF6B6E7A),
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-            const SizedBox(height: 18),
+                  const SizedBox(height: 16),
 
-            ValueListenableBuilder<ScreenTimeSnapshot>(
-              valueListenable: ScreenTimeService.instance.snapshot,
-              builder: (context, snap, _) {
-                return FutureBuilder<Map<String, dynamic>?>(
-                  future: _deviceArchiveFuture,
-                  builder: (context, archiveSnap) {
-                    final lateNight = _resolveLateNightForUi(
-                      archiveMap: archiveSnap.data,
-                    );
-                    return LateNightSleepAnalyticsCard(data: lateNight);
-                  },
-                );
-              },
-            ),
-
-            FutureBuilder<Map<String, dynamic>?>(
-              future: _deviceArchiveFuture,
-              builder: (context, archiveSnap) {
-                final data = archiveSnap.data;
-                if (data == null) return const SizedBox.shrink();
-                final mergedRaw = data['weekMergedAppSeconds'];
-                if (mergedRaw is! Map) return const SizedBox.shrink();
-                final entries = <MapEntry<String, int>>[];
-                for (final e in mergedRaw.entries) {
-                  final k = e.key.toString();
-                  final v = (e.value as num?)?.toInt() ?? 0;
-                  if (k.isNotEmpty && v > 0) {
-                    entries.add(MapEntry(k, v));
-                  }
-                }
-                entries.sort((a, b) => b.value.compareTo(a.value));
-                if (entries.isEmpty) return const SizedBox.shrink();
-                final sum = entries.fold<int>(0, (a, e) => a + e.value);
-                final todayTotal =
-                    (data['todayTotalSeconds'] as num?)?.toInt() ?? 0;
-                return Container(
-                  width: double.infinity,
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(18),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.02),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'App usage (this device)',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 14,
-                          color: Color(0xFF181A22),
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Last 7 days merged: ${formatDurationShort(sum)} · '
-                        'Today (live): ${formatDurationShort(todayTotal)}',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF6B6E7A),
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      ...entries.take(8).map(
-                            (e) => Padding(
-                              padding: const EdgeInsets.only(bottom: 6),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      e.key,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    formatDurationShort(e.value),
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w700,
-                                      color: Color(0xFF6F39E8),
-                                    ),
-                                  ),
-                                ],
+                  FutureBuilder<AnalyticsDashboardPayload>(
+                    future: _dashboardFuture,
+                    builder: (context, dashSnap) {
+                      final dash =
+                          dashSnap.data ?? AnalyticsDashboardPayload.empty;
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _MindSyncIndexHero(index: dash.mindsyncIndex),
+                          const SizedBox(height: 22),
+                          Row(
+                            children: [
+                              const Text(
+                                'BEHAVIOR',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  letterSpacing: 1.4,
+                                  color: Color(0xFF6F39E8),
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
+                              const Spacer(),
+                              Text(
+                                dash.periodLabel.isNotEmpty
+                                    ? dash.periodLabel
+                                    : 'Synced',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  letterSpacing: 0.4,
+                                  color: Color(0xFF6F39E8),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          _BehaviorGrid(
+                            behavior: dash.behavior,
+                            period: dash.period,
+                          ),
+                          const SizedBox(height: 22),
+                          const _SectionLabel('RHYTHM DISTRIBUTION'),
+                          const SizedBox(height: 8),
+                          _RhythmDistributionCard(rhythm: dash.rhythm),
+                          const SizedBox(height: 16),
+                          _LateNightActivityCard(lateNight: dash.lateNight),
+                          const SizedBox(height: 22),
+                          const _SectionLabel('ACTIVITY ALLOCATION'),
+                          const SizedBox(height: 8),
+                          const _ActivityAllocationCard(),
+                          const SizedBox(height: 22),
+                          const Text(
+                            'Behavioral Insights',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF1D1F28),
+                              letterSpacing: -0.3,
                             ),
                           ),
-                    ],
+                          const SizedBox(height: 12),
+                          _BehavioralInsightSection(
+                            dash: dash,
+                            rangeLabel: _rangeKey(selected),
+                          ),
+                        ],
+                      );
+                    },
                   ),
-                );
-              },
-            ),
-
-            // INSIGHTS & TRENDS label
-            const Text(
-              'INSIGHTS & TRENDS',
-              style: TextStyle(
-                fontSize: 11,
-                letterSpacing: 1.5,
-                color: Color(0xFF9E9FA9),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 8),
-
-            // Focus & Balance title
-            const Text(
-              'Focus &\nBalance',
-              style: TextStyle(
-                fontSize: 32,
-                height: 1.05,
-                fontWeight: FontWeight.w800,
-                color: Color(0xFF181A22),
-                letterSpacing: -0.5,
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            // Range Switch
-            _RangeSwitch(
-              selected: selected,
-              onChanged: (value) => setState(() {
-                selected = value;
-                _analyticsFuture = AnalyticsDataService.instance.fetch(
-                  _rangeKey(selected),
-                );
-              }),
-            ),
-            const SizedBox(height: 20),
-
-            // Sleep Time Card
-            const _SleepCard(),
-            const SizedBox(height: 16),
-
-            // Screen Time Card
-            _ScreenTimeCard(range: selected),
-            const SizedBox(height: 16),
-
-            FutureBuilder<AnalyticsPayload>(
-              future: _analyticsFuture,
-              builder: (context, snapshot) {
-                final payload =
-                    snapshot.data ??
-                    const AnalyticsPayload(
-                      topCategories: [],
-                      moodFrequency: [],
-                      dominantMood: 'neutral',
-                      verificationRatePercent: 0,
-                      topContentDaily: [],
-                      dominantMoodDaily: [],
-                      stressDaily: [],
-                    );
-                return Column(
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          flex: 5,
-                          child: _CategoriesCard(
-                            categories: payload.contentPreferenceTop3.isNotEmpty
-                                ? payload.contentPreferenceTop3
-                                : payload.topCategories.take(3).toList(),
-                            hasData: payload.contentPreferenceHasData ||
-                                payload.hasCategoryData,
-                            totalChunks: payload.totalAnalyzedChunks,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          flex: 4,
-                          child: _StressCard(
-                            insightMessage: payload.behaviourInsightMessage,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    _MoodFrequencyCard(
-                      moodFrequency: payload.moodFrequency,
-                      dominantMood: payload.dominantMood,
-                    ),
-                    const SizedBox(height: 24),
-                  ],
-                );
-              },
-            ),
-
-            const Text(
-              'Behavioral Insights',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.w800,
-                color: Color(0xFF1D1F28),
-                letterSpacing: -0.3,
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            FutureBuilder<AnalyticsPayload>(
-              future: _analyticsFuture,
-              builder: (context, snapshot) {
-                final payload =
-                    snapshot.data ??
-                    const AnalyticsPayload(
-                      topCategories: [],
-                      moodFrequency: [],
-                      dominantMood: 'neutral',
-                      verificationRatePercent: 0,
-                      topContentDaily: [],
-                      dominantMoodDaily: [],
-                      stressDaily: [],
-                    );
-                final study = payload.behaviourStudy;
-                final topDetected = study.classes
-                    .where((row) => ((row['count'] as num?)?.toInt() ?? 0) > 0)
-                    .toList();
-                final subtitle = !study.hasData
-                    ? 'No behaviour patterns recorded yet.'
-                    : topDetected.isEmpty
-                    ? 'No symptoms detected in this period.'
-                    : () {
-                        topDetected.sort(
-                          (a, b) => ((b['count'] as num?) ?? 0).compareTo(
-                            (a['count'] as num?) ?? 0,
-                          ),
-                        );
-                        final top = topDetected.first;
-                        return '${top['label']}: ${top['count']} detected';
-                      }();
-                return _InsightTile(
-                  icon: Icons.psychology_alt_rounded,
-                  iconBg: const Color(0xFFF0EBFF),
-                  iconColor: const Color(0xFF6F39E8),
-                  title: 'Behaviour Study',
-                  subtitle: subtitle,
-                  onTap: () async {
-                    final archive = await _deviceArchiveFuture;
-                    if (!context.mounted) return;
-                    final lateNight = _resolveLateNightForUi(archiveMap: archive);
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => BehavioralInsightDetailScreen(
-                          title: 'Behaviour Study',
-                          kind: BehavioralInsightKind.behaviourStudy,
-                          rangeLabel: _rangeKey(selected),
-                          behaviourStudy: payload.behaviourStudy,
-                          facialExpressionStudy: payload.facialExpressionStudy,
-                          contentTypeAnalysis: payload.contentTypeAnalysis,
-                          lateNightSleep: lateNight,
-                        ),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-            const SizedBox(height: 12),
-            FutureBuilder<AnalyticsPayload>(
-              future: _analyticsFuture,
-              builder: (context, snapshot) {
-                final payload =
-                    snapshot.data ??
-                    const AnalyticsPayload(
-                      topCategories: [],
-                      moodFrequency: [],
-                      dominantMood: 'neutral',
-                      verificationRatePercent: 0,
-                      topContentDaily: [],
-                      dominantMoodDaily: [],
-                      stressDaily: [],
-                    );
-                final facial = payload.facialExpressionStudy;
-                final validTotal = facial.classes.fold<int>(
-                  0,
-                  (sum, row) =>
-                      sum + ((row['valid_detections'] as num?)?.toInt() ?? 0),
-                );
-                return _InsightTile(
-                  icon: Icons.face_retouching_natural_rounded,
-                  iconBg: const Color(0xFFDDF7F4),
-                  iconColor: const Color(0xFF0E9186),
-                  title: 'Facial Expression Study',
-                  subtitle: !facial.hasData
-                      ? 'No facial expression results yet.'
-                      : '$validTotal high-confidence signals (>0.50)',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => BehavioralInsightDetailScreen(
-                          title: 'Facial Expression Study',
-                          kind: BehavioralInsightKind.facialExpressionStudy,
-                          rangeLabel: _rangeKey(selected),
-                          behaviourStudy: payload.behaviourStudy,
-                          facialExpressionStudy: payload.facialExpressionStudy,
-                          contentTypeAnalysis: payload.contentTypeAnalysis,
-                        ),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-            const SizedBox(height: 12),
-            FutureBuilder<AnalyticsPayload>(
-              future: _analyticsFuture,
-              builder: (context, snapshot) {
-                final payload =
-                    snapshot.data ??
-                    const AnalyticsPayload(
-                      topCategories: [],
-                      moodFrequency: [],
-                      dominantMood: 'neutral',
-                      verificationRatePercent: 0,
-                      topContentDaily: [],
-                      dominantMoodDaily: [],
-                      stressDaily: [],
-                    );
-                final content = payload.contentTypeAnalysis;
-                final sorted = [...content.items]
-                  ..sort(
-                    (a, b) => ((b['percent'] as num?) ?? 0).compareTo(
-                      (a['percent'] as num?) ?? 0,
-                    ),
-                  );
-                final top = sorted.isNotEmpty ? sorted.first : null;
-                return _InsightTile(
-                  icon: Icons.movie_filter_rounded,
-                  iconBg: const Color(0xFFFFF4E5),
-                  iconColor: const Color(0xFFE09100),
-                  title: 'Most Content Type',
-                  subtitle: !content.hasData || top == null
-                      ? 'No content type data available yet.'
-                      : '${top['label']} leads at ${((top['percent'] as num?) ?? 0).toStringAsFixed(0)}%',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => BehavioralInsightDetailScreen(
-                          title: 'Most Content Type',
-                          kind: BehavioralInsightKind.contentType,
-                          rangeLabel: _rangeKey(selected),
-                          behaviourStudy: payload.behaviourStudy,
-                          facialExpressionStudy: payload.facialExpressionStudy,
-                          contentTypeAnalysis: payload.contentTypeAnalysis,
-                        ),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
           ],
         ),
       ),
@@ -525,7 +174,46 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 }
 
-// Range Switch Widget
+// ---------------------------------------------------------------------------
+// Shared decorations
+// ---------------------------------------------------------------------------
+
+BoxDecoration _cardDecoration() {
+  return BoxDecoration(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(20),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withValues(alpha: 0.03),
+        blurRadius: 12,
+        offset: const Offset(0, 4),
+      ),
+    ],
+  );
+}
+
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 11,
+        letterSpacing: 1.4,
+        color: Color(0xFF6F39E8),
+        fontWeight: FontWeight.w800,
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Range switch
+// ---------------------------------------------------------------------------
+
 class _RangeSwitch extends StatelessWidget {
   const _RangeSwitch({required this.selected, required this.onChanged});
 
@@ -537,13 +225,20 @@ class _RangeSwitch extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: const Color(0xFFF0F0F5),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(30),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Row(
         children: [
-          _buildSwitchItem('Week', AnalyticsRange.week),
           _buildSwitchItem('Day', AnalyticsRange.day),
+          _buildSwitchItem('Week', AnalyticsRange.week),
           _buildSwitchItem('Month', AnalyticsRange.month),
         ],
       ),
@@ -577,7 +272,7 @@ class _RangeSwitch extends StatelessWidget {
               style: TextStyle(
                 color: isSelected ? Colors.white : const Color(0xFF3A3B46),
                 fontSize: 13,
-                fontWeight: FontWeight.w600,
+                fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
               ),
             ),
           ),
@@ -587,237 +282,312 @@ class _RangeSwitch extends StatelessWidget {
   }
 }
 
-// Sleep Time Card
-class _SleepCard extends StatelessWidget {
-  const _SleepCard();
+// ---------------------------------------------------------------------------
+// MindSync Index hero (purple gradient)
+// ---------------------------------------------------------------------------
+
+class _BehavioralInsightSection extends StatelessWidget {
+  const _BehavioralInsightSection({
+    required this.dash,
+    required this.rangeLabel,
+  });
+
+  final AnalyticsDashboardPayload dash;
+  final String rangeLabel;
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<ScreenTimeSnapshot>(
-      valueListenable: ScreenTimeService.instance.snapshot,
-      builder: (context, data, _) {
-        final sleep = data.lateNightSleep;
-        final minutes = sleep.sleepTonightMinutes;
-        final subtitle = minutes > 0
-            ? 'Estimated from screen-off time (10 PM – 5 AM)'
-            : 'Sleep is estimated when your screen stays off overnight';
+    final study = dash.behaviourStudy;
+    final topDetected = study.classes
+        .where((row) => ((row['count'] as num?)?.toInt() ?? 0) > 0)
+        .toList();
+    final behaviourSubtitle = !study.hasData
+        ? 'No behaviour patterns recorded yet.'
+        : topDetected.isEmpty
+            ? 'No symptoms detected in this period.'
+            : () {
+                topDetected.sort(
+                  (a, b) =>
+                      ((b['count'] as num?) ?? 0).compareTo(
+                        (a['count'] as num?) ?? 0,
+                      ),
+                );
+                final top = topDetected.first;
+                return '${top['label']}: ${top['count']} detected';
+              }();
 
-        return Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(28),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.02),
-                blurRadius: 10,
-                offset: const Offset(0, 2),
+    final facial = dash.facialExpressionStudy;
+    final validTotal = facial.classes.fold<int>(
+      0,
+      (sum, row) => sum + ((row['valid_detections'] as num?)?.toInt() ?? 0),
+    );
+
+    final content = dash.contentTypeAnalysis;
+    final sorted = [...content.items]
+      ..sort(
+        (a, b) =>
+            ((b['percent'] as num?) ?? 0).compareTo((a['percent'] as num?) ?? 0),
+      );
+    final topContent = sorted.isNotEmpty ? sorted.first : null;
+
+    return Column(
+      children: [
+        _InsightTile(
+          icon: Icons.psychology_alt_rounded,
+          iconBg: const Color(0xFFF0EBFF),
+          iconColor: const Color(0xFF6F39E8),
+          title: 'Behaviour Study',
+          subtitle: behaviourSubtitle,
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => BehavioralInsightDetailScreen(
+                  title: 'Behaviour Study',
+                  kind: BehavioralInsightKind.behaviourStudy,
+                  rangeLabel: rangeLabel,
+                  behaviourStudy: dash.behaviourStudy,
+                  facialExpressionStudy: dash.facialExpressionStudy,
+                  contentTypeAnalysis: dash.contentTypeAnalysis,
+                ),
               ),
-            ],
+            );
+          },
+        ),
+        const SizedBox(height: 12),
+        _InsightTile(
+          icon: Icons.face_retouching_natural_rounded,
+          iconBg: const Color(0xFFDDF7F4),
+          iconColor: const Color(0xFF0E9186),
+          title: 'Facial Expression Study',
+          subtitle: !facial.hasData
+              ? 'No facial expression results yet.'
+              : '$validTotal high-confidence signals (>0.50)',
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => BehavioralInsightDetailScreen(
+                  title: 'Facial Expression Study',
+                  kind: BehavioralInsightKind.facialExpressionStudy,
+                  rangeLabel: rangeLabel,
+                  behaviourStudy: dash.behaviourStudy,
+                  facialExpressionStudy: dash.facialExpressionStudy,
+                  contentTypeAnalysis: dash.contentTypeAnalysis,
+                ),
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: 12),
+        _InsightTile(
+          icon: Icons.movie_filter_rounded,
+          iconBg: const Color(0xFFFFF4E5),
+          iconColor: const Color(0xFFE09100),
+          title: 'Most Content Type',
+          subtitle: !content.hasData || topContent == null
+              ? 'No content type data available yet.'
+              : '${topContent['label']} leads at ${((topContent['percent'] as num?) ?? 0).toStringAsFixed(0)}%',
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => BehavioralInsightDetailScreen(
+                  title: 'Most Content Type',
+                  kind: BehavioralInsightKind.contentType,
+                  rangeLabel: rangeLabel,
+                  behaviourStudy: dash.behaviourStudy,
+                  facialExpressionStudy: dash.facialExpressionStudy,
+                  contentTypeAnalysis: dash.contentTypeAnalysis,
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _MindSyncIndexHero extends StatelessWidget {
+  const _MindSyncIndexHero({required this.index});
+
+  final AnalyticsMindSyncIndex index;
+
+  String _stressCaption(double v) =>
+      MentalHealthSeverity.labelFromPercent(v);
+
+  @override
+  Widget build(BuildContext context) {
+    final score = index.wellbeingScore;
+    final scoreText = score > 0 ? '$score' : '—';
+    final trend = index.trendPointsVsPrior;
+    final trendLabel = trend == null
+        ? 'Live from your data'
+        : trend >= 0
+            ? '+$trend pts vs prior period'
+            : '$trend pts vs prior period';
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF8B5CF6), Color(0xFF6D28D9)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(28),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF6F39E8).withValues(alpha: 0.28),
+            blurRadius: 24,
+            offset: const Offset(0, 12),
           ),
-          child: Row(
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'SLEEP TIME',
+              const Text(
+                'MINDSYNC INDEX',
+                style: TextStyle(
+                  fontSize: 10,
+                  letterSpacing: 1.4,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFFD8C4FF),
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Icon(
+                      Icons.spa_outlined,
+                      size: 12,
+                      color: Color(0xFF5EEAD4),
+                    ),
+                    SizedBox(width: 4),
+                    Text(
+                      'Thriving & Calm',
                       style: TextStyle(
-                        fontSize: 11,
-                        letterSpacing: 1.2,
-                        color: Color(0xFF9A97AD),
+                        fontSize: 10.5,
                         fontWeight: FontWeight.w700,
+                        color: Colors.white,
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      formatSleepDuration(minutes),
-                      style: const TextStyle(
-                        fontSize: 30,
-                        fontWeight: FontWeight.w800,
-                        height: 0.95,
-                        color: Color(0xFF181A22),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      subtitle,
-                      style: TextStyle(
-                        color: Colors.grey.shade600,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    if (sleep.lateNightTonightMinutes > 0) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        'Late-night activity tonight: '
-                        '${formatSleepDuration(sleep.lateNightTonightMinutes)}',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: LateNightSleepColors.activityAccent,
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ),
-              Container(
-                width: 70,
-                height: 70,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFBDF2EC),
-                  borderRadius: BorderRadius.circular(24),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                scoreText,
+                style: const TextStyle(
+                  fontSize: 46,
+                  fontWeight: FontWeight.w900,
+                  height: 1.0,
+                  color: Colors.white,
+                  letterSpacing: -1,
                 ),
-                child: const Center(
-                  child: CircleAvatar(
-                    radius: 22,
-                    backgroundColor: Color(0xFF59DDD0),
-                    child: Icon(
-                      Icons.nightlight_round,
-                      size: 22,
-                      color: Color(0xFF0F2E34),
-                    ),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(left: 6, bottom: 6),
+                child: Text(
+                  '/ 100',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFFD8C4FF),
                   ),
                 ),
               ),
             ],
           ),
-        );
-      },
-    );
-  }
-}
-
-// Screen Time Card with Bar Chart
-class _ScreenTimeCard extends StatelessWidget {
-  const _ScreenTimeCard({required this.range});
-
-  final AnalyticsRange range;
-
-  @override
-  Widget build(BuildContext context) {
-    const days = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Text(
-                'AVG. SCREEN TIME',
-                style: TextStyle(
-                  fontSize: 11,
-                  letterSpacing: 1.2,
-                  color: Color(0xFF9A97AD),
-                  fontWeight: FontWeight.w700,
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  (trend ?? 0) >= 0
+                      ? Icons.arrow_upward_rounded
+                      : Icons.arrow_downward_rounded,
+                  size: 11,
+                  color: (trend ?? 0) >= 0
+                      ? const Color(0xFFB9F0C0)
+                      : const Color(0xFFFFB4B4),
                 ),
-              ),
-              Spacer(),
-              Icon(Icons.show_chart, size: 18, color: Color(0xFFB8B9C4)),
-            ],
-          ),
-          const SizedBox(height: 10),
-          ValueListenableBuilder<ScreenTimeSnapshot>(
-            valueListenable: ScreenTimeService.instance.snapshot,
-            builder: (context, data, _) {
-              final seconds = switch (range) {
-                AnalyticsRange.day => data.daySeconds,
-                AnalyticsRange.week => data.weekSeconds,
-                AnalyticsRange.month => data.monthSeconds,
-              };
-              return Text(
-                '${formatDurationShort(seconds)}${data.recordingActive ? ' · REC' : ''}',
-                style: TextStyle(
-                  fontSize: 30,
-                  fontWeight: FontWeight.w800,
-                  height: 0.95,
-                  color: data.recordingActive
-                      ? const Color(0xFF0E9186)
-                      : const Color(0xFF181A22),
+                const SizedBox(width: 4),
+                Text(
+                  trendLabel,
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
                 ),
-              );
-            },
+              ],
+            ),
           ),
           const SizedBox(height: 16),
-          SizedBox(
-            height: 80,
-            child: ValueListenableBuilder<ScreenTimeSnapshot>(
-              valueListenable: ScreenTimeService.instance.snapshot,
-              builder: (context, data, _) {
-                final heights = switch (range) {
-                  AnalyticsRange.day =>
-                    data.analyticsDayBarHeights.length >= 7
-                        ? data.analyticsDayBarHeights.sublist(0, 7)
-                        : ScreenTimeSnapshot.analyticsBarsNoData,
-                  AnalyticsRange.week =>
-                    data.analyticsWeekBarHeights.length >= 7
-                        ? data.analyticsWeekBarHeights.sublist(0, 7)
-                        : ScreenTimeSnapshot.analyticsBarsNoData,
-                  AnalyticsRange.month =>
-                    data.analyticsMonthBarHeights.length >= 7
-                        ? data.analyticsMonthBarHeights.sublist(0, 7)
-                        : ScreenTimeSnapshot.analyticsBarsNoData,
-                };
-                double maxBar = heights.isEmpty
-                    ? 1
-                    : heights.reduce((a, b) => a > b ? a : b);
-                if (maxBar <= 0) maxBar = 1;
-
-                return Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: List.generate(7, (index) {
-                    final h = heights[index].clamp(8.0, 80.0);
-                    final isHighest = heights[index] == maxBar;
-                    return Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 3),
-                        child: Container(
-                          height: h,
-                          decoration: BoxDecoration(
-                            color: isHighest
-                                ? const Color(0xFF6F39E8)
-                                : const Color(0xFFE3E4EA),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                      ),
-                    );
-                  }),
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 12),
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: days.map((day) {
-              return Text(
-                day,
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF9DA0AB),
-                  fontWeight: FontWeight.w600,
+            children: [
+              Expanded(
+                child: _IndexTile(
+                  icon: Icons.monitor_heart_outlined,
+                  label: 'STRESS',
+                  value: index.stressAvg > 0
+                      ? index.stressAvg.round().toString()
+                      : '—',
+                  caption: index.stressAvg > 0
+                      ? _stressCaption(index.stressAvg)
+                      : 'No data',
                 ),
-              );
-            }).toList(),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _IndexTile(
+                  icon: Icons.favorite_border_rounded,
+                  label: 'ANXIETY',
+                  value: index.anxietyAvg > 0
+                      ? index.anxietyAvg.round().toString()
+                      : '—',
+                  caption: index.anxietyAvg > 0
+                      ? _stressCaption(index.anxietyAvg)
+                      : 'No data',
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _IndexTile(
+                  icon: Icons.insights_rounded,
+                  label: 'DEPRESSION',
+                  value: index.depressionAvg > 0
+                      ? index.depressionAvg.round().toString()
+                      : '—',
+                  caption: index.depressionAvg > 0
+                      ? _stressCaption(index.depressionAvg)
+                      : 'No data',
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -825,92 +595,67 @@ class _ScreenTimeCard extends StatelessWidget {
   }
 }
 
-class _CategoriesCard extends StatelessWidget {
-  const _CategoriesCard({
-    required this.categories,
-    required this.hasData,
-    required this.totalChunks,
+class _IndexTile extends StatelessWidget {
+  const _IndexTile({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.caption,
   });
 
-  final List<Map<String, dynamic>> categories;
-  final bool hasData;
-  final int totalChunks;
+  final IconData icon;
+  final String label;
+  final String value;
+  final String caption;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 220,
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
+        color: Colors.white.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'CATEGORY SESSION',
-            style: TextStyle(
-              fontSize: 11,
-              letterSpacing: 1.2,
-              color: Color(0xFF9A97AD),
-              fontWeight: FontWeight.w700,
+          Row(
+            children: [
+              Icon(icon, size: 11, color: const Color(0xFF5EEAD4)),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFFD8C4FF),
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              letterSpacing: -0.3,
             ),
           ),
-          if (totalChunks > 0) ...[
-            const SizedBox(height: 2),
-            Text(
-              '$totalChunks analysed clip${totalChunks == 1 ? '' : 's'}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 11,
-                color: Color(0xFFB8B9C4),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-          const SizedBox(height: 10),
-          Expanded(
-            child: Builder(
-              builder: (context) {
-                if (!hasData || categories.isEmpty) {
-                  return const Align(
-                    alignment: Alignment.topLeft,
-                    child: Text(
-                      'No analytics data available yet.',
-                      style: TextStyle(fontSize: 12, color: Color(0xFF9DA0AB)),
-                    ),
-                  );
-                }
-                final rows = categories.take(3).toList();
-                final palette = [
-                  const Color(0xFF6F39E8),
-                  const Color(0xFF60D5C8),
-                  const Color(0xFF2E6FD2),
-                ];
-                return Column(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: List.generate(rows.length, (index) {
-                    final row = rows[index];
-                    final label = (row['category']?.toString() ?? 'Other');
-                    final percent = (row['percent'] as num?)?.toDouble() ?? 0;
-                    return _CategoryLine(
-                      label: label,
-                      value: '${percent.toStringAsFixed(0)}%',
-                      progress: (percent / 100).clamp(0, 1),
-                      color: palette[index % palette.length],
-                    );
-                  }),
-                );
-              },
+          const SizedBox(height: 2),
+          Text(
+            caption,
+            style: TextStyle(
+              fontSize: 9.5,
+              fontWeight: FontWeight.w600,
+              color: Colors.white.withValues(alpha: 0.75),
             ),
           ),
         ],
@@ -919,18 +664,22 @@ class _CategoriesCard extends StatelessWidget {
   }
 }
 
-class _CategoryLine extends StatelessWidget {
-  const _CategoryLine({
-    required this.label,
-    required this.value,
-    required this.progress,
-    required this.color,
-  });
+// ---------------------------------------------------------------------------
+// Behavior metrics grid
+// ---------------------------------------------------------------------------
 
-  final String label;
-  final String value;
-  final double progress;
-  final Color color;
+class _BehaviorGrid extends StatelessWidget {
+  const _BehaviorGrid({required this.behavior, required this.period});
+
+  final AnalyticsBehaviorMetrics behavior;
+  final String period;
+
+  String get _sleepTitle =>
+      period == 'day' ? 'Sleep (last night)' : 'Sleep (avg / night)';
+
+  String get _screenTitle => period == 'day'
+      ? 'Daily Screen Time'
+      : 'Avg. Daily Screen Time';
 
   @override
   Widget build(BuildContext context) {
@@ -939,63 +688,92 @@ class _CategoryLine extends StatelessWidget {
         Row(
           children: [
             Expanded(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: Color(0xFF4D4F5D),
-                  fontWeight: FontWeight.w600,
-                ),
+              child: _VitalCard(
+                icon: Icons.bedtime_outlined,
+                iconBg: const Color(0xFFF0FDFA),
+                iconColor: const Color(0xFF0E9186),
+                topTag: '10 PM – 6 AM',
+                topTagColor: const Color(0xFF0E9186),
+                title: _sleepTitle,
+                value: behavior.sleepDisplay,
+                caption: 'Screen-off rest window',
+                captionColor: const Color(0xFF15803D),
               ),
             ),
-            const SizedBox(width: 8),
-            Text(
-              value,
-              style: const TextStyle(
-                fontSize: 11,
-                color: Color(0xFF4D4F5D),
-                fontWeight: FontWeight.w700,
+            const SizedBox(width: 12),
+            Expanded(
+              child: _VitalCard(
+                icon: Icons.sentiment_satisfied_alt_rounded,
+                iconBg: const Color(0xFFFFF4E5),
+                iconColor: const Color(0xFFE09100),
+                topTag: 'Mood',
+                topTagColor: const Color(0xFFE09100),
+                title: 'Mental Mood Score',
+                value: behavior.moodScore > 0 ? '${behavior.moodScore}' : '—',
+                caption: behavior.moodCaption.isNotEmpty
+                    ? behavior.moodCaption
+                    : 'Log moods to score',
+                captionColor: const Color(0xFF15803D),
               ),
             ),
           ],
         ),
-        const SizedBox(height: 6),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: LinearProgressIndicator(
-            value: progress,
-            minHeight: 6,
-            backgroundColor: const Color(0xFFE9EAF1),
-            valueColor: AlwaysStoppedAnimation<Color>(color),
-          ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _VitalCard(
+                icon: Icons.access_time_rounded,
+                iconBg: const Color(0xFFF3E8FF),
+                iconColor: const Color(0xFF6F39E8),
+                topTag: 'Active',
+                topTagColor: const Color(0xFF6F39E8),
+                title: _screenTitle,
+                value: behavior.avgDailyScreenDisplay,
+                caption: 'Device usage aggregate',
+                captionColor: const Color(0xFF6F39E8),
+              ),
+            ),
+          ],
         ),
       ],
     );
   }
 }
 
-class _StressCard extends StatelessWidget {
-  const _StressCard({required this.insightMessage});
+class _VitalCard extends StatelessWidget {
+  const _VitalCard({
+    required this.icon,
+    required this.iconBg,
+    required this.iconColor,
+    required this.topTag,
+    required this.topTagColor,
+    required this.title,
+    required this.value,
+    required this.caption,
+    required this.captionColor,
+  });
 
-  final String insightMessage;
+  final IconData icon;
+  final Color iconBg;
+  final Color iconColor;
+  final String topTag;
+  final Color topTagColor;
+  final String title;
+  final String value;
+  final String caption;
+  final Color captionColor;
 
   @override
   Widget build(BuildContext context) {
-    final message = insightMessage.trim().isEmpty
-        ? 'No behavioural patterns recorded yet.'
-        : insightMessage.trim();
-
     return Container(
-      height: 220,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF0B66D8),
-        borderRadius: BorderRadius.circular(28),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF0B66D8).withValues(alpha: 0.3),
+            color: Colors.black.withValues(alpha: 0.03),
             blurRadius: 12,
             offset: const Offset(0, 4),
           ),
@@ -1004,33 +782,66 @@ class _StressCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.spa, size: 20, color: Color(0xFFA8D7FF)),
-          const Spacer(),
-          const Text(
-            'BEHAVIOUR',
-            style: TextStyle(
-              color: Color(0xFFC3E2FF),
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1,
-            ),
+          Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: iconBg,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, size: 16, color: iconColor),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 3,
+                ),
+                decoration: BoxDecoration(
+                  color: topTagColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  topTag,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: topTagColor,
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 12),
           Text(
-            message,
-            maxLines: 4,
-            overflow: TextOverflow.ellipsis,
+            title,
             style: const TextStyle(
-              color: Colors.white,
-              fontSize: 14,
+              fontSize: 11,
               fontWeight: FontWeight.w700,
-              height: 1.25,
+              color: Color(0xFF8A8D99),
+              letterSpacing: 0.2,
             ),
           ),
-          const SizedBox(height: 8),
-          const SizedBox(
-            width: 56,
-            child: Divider(color: Color(0x66FFFFFF), thickness: 3),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF181A22),
+              letterSpacing: -0.3,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '• $caption',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: captionColor,
+            ),
           ),
         ],
       ),
@@ -1038,122 +849,674 @@ class _StressCard extends StatelessWidget {
   }
 }
 
-class _MoodFrequencyCard extends StatelessWidget {
-  const _MoodFrequencyCard({
-    required this.moodFrequency,
-    required this.dominantMood,
-  });
+// ---------------------------------------------------------------------------
+// Daily Focus Rhythm card
+// ---------------------------------------------------------------------------
 
-  final List<Map<String, dynamic>> moodFrequency;
-  final String dominantMood;
+class _RhythmDistributionCard extends StatelessWidget {
+  const _RhythmDistributionCard({required this.rhythm});
+
+  final AnalyticsRhythmChart rhythm;
 
   @override
   Widget build(BuildContext context) {
-    final moods = moodFrequency.take(10).toList();
+    final labels = rhythm.labels.length >= 7
+        ? rhythm.labels.sublist(rhythm.labels.length - 7)
+        : List<String>.from(rhythm.labels);
+    final hours = rhythm.hoursPerDay.length >= 7
+        ? rhythm.hoursPerDay.sublist(rhythm.hoursPerDay.length - 7)
+        : List<double>.from(rhythm.hoursPerDay);
+    while (labels.length < 7) {
+      labels.add('');
+    }
+    while (hours.length < 7) {
+      hours.add(0);
+    }
+    final maxH = hours.fold<double>(0, (a, b) => a > b ? a : b);
+    final scale = maxH > 0 ? maxH : 1.0;
+    var peakIndex = 0;
+    for (var i = 0; i < hours.length; i++) {
+      if (hours[i] >= hours[peakIndex]) peakIndex = i;
+    }
+    final peakLabel = rhythm.peakDayLabel.isNotEmpty
+        ? '${rhythm.peakDayLabel} peak'
+        : (labels[peakIndex].isNotEmpty ? '${labels[peakIndex]} peak' : '');
 
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Expanded(
-                child: Text(
-                  'MOOD FREQUENCY',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    letterSpacing: 1.2,
-                    color: Color(0xFF9A97AD),
-                    fontWeight: FontWeight.w700,
-                  ),
+              const Text(
+                'Screen Time Rhythm',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF181A22),
+                  letterSpacing: -0.2,
                 ),
               ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  'TOP: ${dominantMood.toUpperCase()}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.end,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF8A7ACC),
-                    fontWeight: FontWeight.w700,
+              const Spacer(),
+              if (peakLabel.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF3F1FB),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    peakLabel,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF6F39E8),
+                      letterSpacing: 0.4,
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
+          const Text(
+            'Hours per day (0–24h scale)',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF8A8D99),
+            ),
+          ),
+          const SizedBox(height: 12),
           SizedBox(
-            height: 40,
-            child: moods.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No mood samples yet',
-                      style: TextStyle(fontSize: 12, color: Color(0xFF9DA0AB)),
-                    ),
-                  )
-                : ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: moods.length,
-                    separatorBuilder: (_, _) => const SizedBox(width: 8),
-                    itemBuilder: (context, index) {
-                      final mood = moods[index];
-                      final label = (mood['mood']?.toString() ?? 'neutral')
-                          .toLowerCase();
-                      final bg = label.contains('happy')
-                          ? const Color(0xFFC6F2ED)
-                          : label.contains('sad') || label.contains('angry')
-                          ? const Color(0xFFFFE0E0)
-                          : const Color(0xFFD9F8F4);
-                      final fg =
-                          label.contains('sad') || label.contains('angry')
-                          ? const Color(0xFFB13030)
-                          : const Color(0xFF4CA49B);
-                      final percent =
-                          (mood['percent'] as num?)?.toDouble() ?? 0;
-                      return Tooltip(
-                        message:
-                            '${label.toUpperCase()} ${percent.toStringAsFixed(1)}%',
-                        child: CircleAvatar(
-                          radius: 16,
-                          backgroundColor: bg,
-                          child: Icon(
-                            label.contains('happy')
-                                ? Icons.sentiment_very_satisfied
-                                : label.contains('sad')
-                                ? Icons.sentiment_dissatisfied
-                                : label.contains('angry')
-                                ? Icons.sentiment_very_dissatisfied
-                                : Icons.sentiment_neutral,
-                            size: 16,
-                            color: fg,
+            height: 150,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: List.generate(7, (i) {
+                final h = hours[i];
+                final barH = (h / scale * 110).clamp(4.0, 110.0);
+                final isPeak = i == peakIndex;
+                return Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Text(
+                          '${h.toStringAsFixed(1)}h',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: isPeak
+                                ? const Color(0xFF6F39E8)
+                                : const Color(0xFF9B9EA9),
                           ),
                         ),
-                      );
-                    },
+                        const SizedBox(height: 4),
+                        Container(
+                          height: barH,
+                          decoration: BoxDecoration(
+                            color: isPeak
+                                ? const Color(0xFF6F39E8)
+                                : const Color(0xFFEDEBF7),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          labels[i],
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF8A8D99),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
+                );
+              }),
+            ),
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF9F8FE),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF6F39E8),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    peakLabel.isNotEmpty
+                        ? '$peakLabel · up to ${maxH.toStringAsFixed(1)}h'
+                        : 'Screen time by weekday (rolling 7 days)',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF2C2D36),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Late night activity (10 PM – 6 AM, screen-on only)
+// ---------------------------------------------------------------------------
+
+class _LateNightActivityCard extends StatelessWidget {
+  const _LateNightActivityCard({required this.lateNight});
+
+  final AnalyticsLateNightActivity lateNight;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Late Night Activity',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF181A22),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            lateNight.periodLabel.isNotEmpty
+                ? '${lateNight.periodLabel} · 10 PM – 6 AM screen-on'
+                : '10 PM – 6 AM screen-on time',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF6B6E7A),
+            ),
+          ),
+          const SizedBox(height: 14),
+          if (!lateNight.hasData)
+            const Text(
+              'No late-night screen activity recorded for this period.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Color(0xFF6B6E7A),
+                fontWeight: FontWeight.w600,
+                height: 1.35,
+              ),
+            )
+          else ...[
+            _lateRow(
+              Icons.nightlight_round,
+              'Total late-night use',
+              lateNight.totalDisplay,
+            ),
+            const SizedBox(height: 10),
+            if (lateNight.topAppName.isNotEmpty)
+              _lateRow(
+                Icons.apps_rounded,
+                'Top app',
+                '${lateNight.topAppName} · ${lateNight.topAppDisplay}',
+              ),
+            const SizedBox(height: 10),
+            _lateRow(
+              Icons.people_outline_rounded,
+              'Social media',
+              lateNight.socialDisplay,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _lateRow(IconData icon, String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: const Color(0xFF6F39E8)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF8A8D99),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF181A22),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Activity Allocation card
+// ---------------------------------------------------------------------------
+
+class _ActivityAllocationCard extends StatelessWidget {
+  const _ActivityAllocationCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Text(
+                'Activity Allocation',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF181A22),
+                  letterSpacing: -0.2,
+                ),
+              ),
+              Spacer(),
+              Text(
+                'Total: 29.5 hrs',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF8A8D99),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          // Stacked bar
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Row(
+              children: const [
+                Expanded(
+                  flex: 55,
+                  child: SizedBox(
+                    height: 12,
+                    child: ColoredBox(color: Color(0xFF6F39E8)),
+                  ),
+                ),
+                Expanded(
+                  flex: 25,
+                  child: SizedBox(
+                    height: 12,
+                    child: ColoredBox(color: Color(0xFF14B8A6)),
+                  ),
+                ),
+                Expanded(
+                  flex: 20,
+                  child: SizedBox(
+                    height: 12,
+                    child: ColoredBox(color: Color(0xFFE09100)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          _AllocRow(
+            color: const Color(0xFF6F39E8),
+            label: 'Deep Work & Productivity',
+            time: '16h 15m',
+            percent: '55%',
+          ),
+          const SizedBox(height: 12),
+          _AllocRow(
+            color: const Color(0xFF14B8A6),
+            label: 'Mindful Rest & Meditation',
+            time: '7h 25m',
+            percent: '25%',
+          ),
+          const SizedBox(height: 12),
+          _AllocRow(
+            color: const Color(0xFFE09100),
+            label: 'Social & Restorative Leisure',
+            time: '5h 50m',
+            percent: '20%',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AllocRow extends StatelessWidget {
+  const _AllocRow({
+    required this.color,
+    required this.label,
+    required this.time,
+    required this.percent,
+  });
+
+  final Color color;
+  final String label;
+  final String time;
+  final String percent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF2C2D36),
+            ),
+          ),
+        ),
+        Text(
+          time,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF6B6C76),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            percent,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Focus Session History
+// ---------------------------------------------------------------------------
+
+class _SessionHistoryCard extends StatelessWidget {
+  const _SessionHistoryCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          _SessionRow(
+            icon: Icons.bolt_rounded,
+            iconBg: const Color(0xFFF3E8FF),
+            iconColor: const Color(0xFF6F39E8),
+            title: 'Deep Focus Session',
+            subtitle: 'Completed · 45 mins · Alpha waves',
+          ),
+          const Divider(height: 1, color: Color(0xFFEFEFF4)),
+          _SessionRow(
+            icon: Icons.self_improvement_rounded,
+            iconBg: const Color(0xFFF0FDFA),
+            iconColor: const Color(0xFF14B8A6),
+            title: 'Mindful Breathing',
+            subtitle: 'Completed · 15 mins · Vagal reset',
+          ),
+          const Divider(height: 1, color: Color(0xFFEFEFF4)),
+          _SessionRow(
+            icon: Icons.nightlight_round,
+            iconBg: const Color(0xFFFFF4E5),
+            iconColor: const Color(0xFFE09100),
+            title: 'Evening Reflection',
+            subtitle: 'Completed · 10 mins · Mood +4',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SessionRow extends StatelessWidget {
+  const _SessionRow({
+    required this.icon,
+    required this.iconBg,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final Color iconBg;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: iconBg,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, size: 18, color: iconColor),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF181A22),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF8A8D99),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(
+            Icons.chevron_right_rounded,
+            size: 20,
+            color: Color(0xFFBCBCC8),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Archived reports tile
+// ---------------------------------------------------------------------------
+
+class _ArchivedReportsTile extends StatelessWidget {
+  const _ArchivedReportsTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: const Color(0xFFF3F1FB),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.archive_outlined,
+              size: 18,
+              color: Color(0xFF6F39E8),
+            ),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Text(
+              'View Archived Weekly Reports',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF181A22),
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF3F1FB),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Text(
+              '12',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF6F39E8),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          const Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 20,
+            color: Color(0xFF8A8D99),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Behavioral Insight tile (kept for functionality)
+// ---------------------------------------------------------------------------
 
 class _InsightTile extends StatelessWidget {
   const _InsightTile({
@@ -1176,24 +1539,18 @@ class _InsightTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(24),
+      borderRadius: BorderRadius.circular(20),
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: const Color(0xFFE8E2FA), width: 1.1),
+          borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF6F39E8).withValues(alpha: 0.06),
-              blurRadius: 14,
-              offset: const Offset(0, 6),
-            ),
-            BoxShadow(
               color: Colors.black.withValues(alpha: 0.03),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
             ),
           ],
         ),
@@ -1204,7 +1561,7 @@ class _InsightTile extends StatelessWidget {
               height: 44,
               decoration: BoxDecoration(
                 color: iconBg,
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(14),
               ),
               child: Icon(icon, size: 22, color: iconColor),
             ),
@@ -1216,9 +1573,10 @@ class _InsightTile extends StatelessWidget {
                   Text(
                     title,
                     style: const TextStyle(
-                      fontSize: 16,
+                      fontSize: 15.5,
                       fontWeight: FontWeight.w800,
                       color: Color(0xFF1D1F28),
+                      letterSpacing: -0.2,
                     ),
                   ),
                   const SizedBox(height: 4),

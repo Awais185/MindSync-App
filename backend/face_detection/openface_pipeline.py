@@ -694,6 +694,7 @@ def run_openface_and_analyze(
     max_video_seconds: float | None = None,
     prefer_reencode: bool = False,
     prepared_video_path: str | None = None,
+    use_depression_model: bool = False,
 ) -> OpenFaceAnalysisResult:
     """
     1) Runs OpenFace FeatureExtraction.exe on a video
@@ -784,7 +785,9 @@ def run_openface_and_analyze(
                 raise RuntimeError("OpenFace did not produce any CSV output.")
             csv_path = os.path.join(tmp_dir, csvs[0])
 
-        scores = analyze_openface_csv(csv_path)
+        scores = analyze_openface_csv(
+            csv_path, use_depression_model=use_depression_model
+        )
         dominant_state = str(scores.get("dominant_state") or "neutral").strip().lower()
 
         # Peak timestamps: choose frames where related AUs are highest.

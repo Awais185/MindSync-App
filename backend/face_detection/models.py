@@ -64,6 +64,12 @@ class MentalHealthResult(models.Model):
     stress_score = models.PositiveSmallIntegerField(default=0)
     anxiety_score = models.PositiveSmallIntegerField(default=0)
     depression_score = models.PositiveSmallIntegerField(default=0)
+    mood = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="ResNet18 ensemble emotion label (background captures).",
+    )
     dominant_state = models.CharField(max_length=20, default="stress", db_index=True)
     source_type = models.CharField(max_length=20, choices=SOURCE_CHOICES, db_index=True)
     scan_type = models.CharField(max_length=20, choices=SCAN_CHOICES, default=SCAN_RECORDED)

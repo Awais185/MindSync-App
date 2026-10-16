@@ -1,0 +1,19 @@
+{
+  "img_size": 224,
+  "num_classes": 7,
+  "n_folds": 5,
+  "class_display": [
+    "Anger",
+    "Contempt",
+    "Disgust",
+    "Fear",
+    "Happiness",
+    "Sadness",
+    "Surprise"
+  ],
+  "ensemble_models": [
+    "resnet18",
+    "efficientnet_b0",
+    "mobilenetv3_large"
+  ]
+}

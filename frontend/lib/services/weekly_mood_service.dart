@@ -113,6 +113,35 @@ class MoodDistributionItem {
       );
 }
 
+class RecentMoodEntry {
+  const RecentMoodEntry({
+    required this.id,
+    required this.label,
+    required this.time,
+    required this.media,
+  });
+
+  final int? id;
+  final String label;
+  final String time;
+  final List<MoodDayMedia> media;
+
+  MoodDayMedia? get preview => media.isNotEmpty ? media.first : null;
+
+  factory RecentMoodEntry.fromJson(Map<String, dynamic> j) {
+    final media = ((j['media'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(MoodDayMedia.fromJson)
+        .toList();
+    return RecentMoodEntry(
+      id: (j['id'] as num?)?.toInt(),
+      label: (j['label'] ?? '').toString(),
+      time: (j['time'] ?? '').toString(),
+      media: media,
+    );
+  }
+}
+
 class WeeklyMoodLiveData {
   const WeeklyMoodLiveData({
     required this.hasSummary,
@@ -122,6 +151,7 @@ class WeeklyMoodLiveData {
     required this.moodDistribution,
     required this.entryCount,
     required this.days,
+    required this.recentEntries,
     required this.insights,
     this.updatedAt,
   });
@@ -133,6 +163,7 @@ class WeeklyMoodLiveData {
   final List<MoodDistributionItem> moodDistribution;
   final int entryCount;
   final List<MoodDayEntry> days;
+  final List<RecentMoodEntry> recentEntries;
   final Map<String, dynamic> insights;
   final String? updatedAt;
 
@@ -144,6 +175,7 @@ class WeeklyMoodLiveData {
     moodDistribution: [],
     entryCount: 0,
     days: [],
+    recentEntries: [],
     insights: {},
   );
 
@@ -162,6 +194,10 @@ class WeeklyMoodLiveData {
         days: ((j['days'] as List<dynamic>?) ?? const [])
             .whereType<Map<String, dynamic>>()
             .map(MoodDayEntry.fromJson)
+            .toList(),
+        recentEntries: ((j['recent_entries'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(RecentMoodEntry.fromJson)
             .toList(),
         insights: (j['insights'] as Map<String, dynamic>?) ?? const {},
         updatedAt: j['updated_at']?.toString(),

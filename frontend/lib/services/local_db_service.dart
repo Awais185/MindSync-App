@@ -251,6 +251,31 @@ class LocalDbService {
     return _rowToRecord(rows.first);
   }
 
+  Future<LocalAuthRecord?> getUserByUsername(String username) async {
+    await ensureMigrated();
+    final normalized = username.trim().toLowerCase();
+    if (normalized.isEmpty) return null;
+
+    if (await _usesPrefsOnly()) {
+      for (final record in (await _readPrefsRecords()).values) {
+        if (record.user.username.trim().toLowerCase() == normalized) {
+          return record;
+        }
+      }
+      return null;
+    }
+
+    final db = await database;
+    final rows = await db.query(
+      _tableUsers,
+      where: 'LOWER(username) = ?',
+      whereArgs: [normalized],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return _rowToRecord(rows.first);
+  }
+
   Future<List<LocalAuthRecord>> getAllUsers() async {
     if (await _usesPrefsOnly()) {
       return (await _readPrefsRecords()).values.toList();

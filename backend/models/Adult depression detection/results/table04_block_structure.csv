@@ -1,0 +1,5 @@
+Class,n_blocks,mean_block_rows
+Healthy,10,1327.0
+Mild,14,4902.0
+Moderate,19,4981.0
+Severe,10,4710.0

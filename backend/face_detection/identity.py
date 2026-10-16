@@ -26,7 +26,12 @@ def _match_threshold() -> float:
     )
 
 
-def _score_frame_against_profile(profile: UserProfile, frame) -> float:
+def _score_frame_against_profile(
+    profile: UserProfile,
+    frame,
+    *,
+    unlock_capture: bool = False,
+) -> float:
     ok_enc, buf = cv2.imencode(".jpg", frame)
     if not ok_enc:
         return 0.0
@@ -40,7 +45,7 @@ def _score_frame_against_profile(profile: UserProfile, frame) -> float:
         enrolled_bytes=enrolled_bytes,
         enrolled_embedding=ensure_profile_embedding(profile),
         threshold=_match_threshold(),
-        unlock_capture=False,
+        unlock_capture=unlock_capture,
     )
     if result.get("status") == "rejected":
         return 0.0
@@ -68,6 +73,7 @@ def face_match_score_from_video_path_multi(
     *,
     threshold: float | None = None,
     max_frames: int = 6,
+    unlock_capture: bool = False,
 ) -> tuple[float, bool]:
     """
     Sample frames across the clip; return max similarity vs enrolled face.
@@ -106,14 +112,18 @@ def face_match_score_from_video_path_multi(
             if not ok or frame is None:
                 continue
             frames_read += 1
-            score = _score_frame_against_profile(profile, frame)
+            score = _score_frame_against_profile(
+                profile, frame, unlock_capture=unlock_capture
+            )
             best = max(best, score)
 
         if frames_read == 0:
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ok, frame = cap.read()
             if ok and frame is not None:
-                best = _score_frame_against_profile(profile, frame)
+                best = _score_frame_against_profile(
+                    profile, frame, unlock_capture=unlock_capture
+                )
     finally:
         cap.release()
 

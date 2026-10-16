@@ -42,20 +42,21 @@ abstract final class FeaturePermissionService {
   }
 
   static Future<void> _persistCamera(bool granted) async {
-    final prefs = await TrackingPermissionPrefs.readGrantSnapshot();
-    await TrackingPermissionPrefs.saveGrantSnapshot(
-      usage: prefs.usage,
-      camera: granted || prefs.camera,
-      screenCapture: prefs.screenCapture,
-      accessibility: prefs.accessibility,
-      screenCaptureSkipped: prefs.screenCaptureSkipped,
-      markSetupDone: await TrackingPermissionPrefs.isSetupMarkedDone(),
+    await ScreenTimeService.instance.persistDevicePermissionGrants(
+      cameraOverride: granted,
     );
+  }
+
+  static Future<void> _persistAfterGrant() async {
+    await ScreenTimeService.instance.persistDevicePermissionGrants();
   }
 
   static Future<bool> ensureUsageAccess(BuildContext context) async {
     if (kIsWeb) return true;
-    if (await ScreenTimeService.instance.hasUsageAccess()) return true;
+    if (await ScreenTimeService.instance.hasUsageAccess()) {
+      await _persistAfterGrant();
+      return true;
+    }
     await _confirmThen(
       context,
       title: 'Usage access',
@@ -63,7 +64,9 @@ abstract final class FeaturePermissionService {
           'MindSync will open Android usage access settings. Turn on access for MindSync, then return to the app.',
       openSettings: ScreenTimeService.instance.openUsageSettings,
     );
-    return await ScreenTimeService.instance.hasUsageAccess();
+    final ok = await ScreenTimeService.instance.hasUsageAccess();
+    if (ok) await _persistAfterGrant();
+    return ok;
   }
 
   static Future<bool> ensureCamera(BuildContext context) async {
@@ -115,49 +118,19 @@ abstract final class FeaturePermissionService {
     if (await ScreenTimeService.instance.hasScreenCapturePermission()) {
       return true;
     }
-    if (!context.mounted) return false;
-    final go = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Screen recording'),
-        content: const Text(
-          'Android will show a system screen-capture prompt (not App info). '
-          'Tap Start or Allow on that dialog to record short wellness clips.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Not now'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: FilledButton.styleFrom(backgroundColor: _accent),
-            child: const Text('Continue'),
-          ),
-        ],
-      ),
-    );
-    if (go != true) return false;
     await ScreenTimeService.instance.launchScreenCaptureConsent();
     await Future<void>.delayed(const Duration(milliseconds: 500));
     final ok = await ScreenTimeService.instance.hasScreenCapturePermission();
-    if (ok) {
-      final prefs = await TrackingPermissionPrefs.readGrantSnapshot();
-      await TrackingPermissionPrefs.saveGrantSnapshot(
-        usage: prefs.usage,
-        camera: prefs.camera,
-        screenCapture: true,
-        accessibility: prefs.accessibility,
-        screenCaptureSkipped: false,
-        markSetupDone: await TrackingPermissionPrefs.isSetupMarkedDone(),
-      );
-    }
+    if (ok) await _persistAfterGrant();
     return ok;
   }
 
   static Future<bool> ensureAccessibility(BuildContext context) async {
     if (kIsWeb) return true;
-    if (await ScreenTimeService.instance.hasAccessibilityService()) return true;
+    if (await ScreenTimeService.instance.hasAccessibilityService()) {
+      await _persistAfterGrant();
+      return true;
+    }
     await _confirmThen(
       context,
       title: 'Accessibility',
@@ -165,7 +138,9 @@ abstract final class FeaturePermissionService {
           'Open accessibility settings, find MindSync, and turn the service on.',
       openSettings: ScreenTimeService.instance.openAccessibilitySettings,
     );
-    return await ScreenTimeService.instance.hasAccessibilityService();
+    final ok = await ScreenTimeService.instance.hasAccessibilityService();
+    if (ok) await _persistAfterGrant();
+    return ok;
   }
 
   static Future<bool> ensureOverlay(BuildContext context) async {
