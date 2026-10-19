@@ -12,7 +12,6 @@ import '../pages/upgrade_plan_screen.dart';
 import '../pages/report_screen.dart';
 import '../../services/local_auth_service.dart';
 import '../../services/screen_time_service.dart';
-import '../../services/recommendations_service.dart';
 import '../../services/subscription_service.dart';
 import '../../services/user_session_cache.dart';
 import '../../ui/layout/mindsync_layout.dart';
@@ -29,7 +28,6 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
   final _auth = LocalAuthService();
   final ScrollController _scrollController = ScrollController();
   AuthProfile? _profile;
-  late Future<WellnessRecommendationResponse> _recommendationsFuture;
   VoidCallback? _sessionListener;
   @override
   bool get wantKeepAlive => true;
@@ -37,7 +35,6 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
   @override
   void initState() {
     super.initState();
-    _refreshRecommendationsFuture();
     _loadProfile();
     _sessionListener = _onUserSessionChanged;
     UserSessionCache.sessionGeneration.addListener(_sessionListener!);
@@ -64,14 +61,7 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
   }
 
   void _onUserSessionChanged() {
-    _refreshRecommendationsFuture();
     unawaited(_loadProfile());
-  }
-
-  void _refreshRecommendationsFuture() {
-    _recommendationsFuture = RecommendationsService.instance
-        .fetchRecommendations(range: 'week');
-    if (mounted) setState(() {});
   }
 
   Future<void> _loadProfile() async {
@@ -132,177 +122,6 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
               ),
             ),
             const SizedBox(height: 20),
-
-            FutureBuilder<WellnessRecommendationResponse>(
-              future: _recommendationsFuture,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(28),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.02),
-                          blurRadius: 10,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: const [
-                        SizedBox(height: 4),
-                        Text(
-                          'Top Recommendation',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            color: Color(0xFF9DA0AB),
-                          ),
-                        ),
-                        SizedBox(height: 12),
-                        SizedBox(height: 16, width: 240),
-                        SizedBox(height: 10, width: 280),
-                        SizedBox(height: 16),
-                        SizedBox(height: 44, width: double.infinity),
-                      ],
-                    ),
-                  );
-                }
-                final model =
-                    snapshot.data ?? WellnessRecommendationResponse.empty;
-                if (!model.hasSummary) {
-                  return Container(
-                    width: double.infinity,
-                    margin: const EdgeInsets.only(bottom: 4),
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                    child: const Text(
-                      'AI recommendations load from your 7-day report. Open the full page to generate your plan.',
-                      style: TextStyle(
-                        fontSize: 12,
-                        height: 1.45,
-                        color: Color(0xFF676B79),
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  );
-                }
-                final previewLine = model.summaryLines.isNotEmpty
-                    ? model.summaryLines.first
-                    : model.summaryText;
-                final recs = model.cards;
-                final top = recs.isNotEmpty
-                    ? recs.first
-                    : RecommendationCard(
-                        title: 'Your AI wellness plan',
-                        description: previewLine,
-                        category: 'Personalized',
-                        priority: 'Medium',
-                        action: const RecommendationAction(
-                          type: 'generic',
-                          label: 'View All Recommendations',
-                        ),
-                      );
-                final isHigh = top.priority.toLowerCase() == 'high';
-                final isMedium = top.priority.toLowerCase() == 'medium';
-                final bg = isHigh
-                    ? const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [Color(0xFF6F39E8), Color(0xFFEF4444)],
-                      )
-                    : isMedium
-                    ? const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [Color(0xFF6F39E8), Color(0xFF22C55E)],
-                      )
-                    : const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [Color(0xFF9DA0AB), Color(0xFFE3E4EA)],
-                      );
-
-                return Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    gradient: bg,
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                  child: Container(
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(28),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Top Recommendation',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            color: Color(0xFF9DA0AB),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          top.title,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w900,
-                            color: Color(0xFF161820),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          top.description,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            height: 1.45,
-                            color: Color(0xFF4C4F61),
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        SizedBox(
-                          width: double.infinity,
-                          height: 44,
-                          child: ElevatedButton(
-                            onPressed: _openRecommendationScreen,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF6F39E8),
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(30),
-                              ),
-                            ),
-                            child: const Text(
-                              'View All Recommendations',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w800,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
 
             ValueListenableBuilder<CurrentSubscriptionModel?>(
               valueListenable: SubscriptionService.instance.subscription,
