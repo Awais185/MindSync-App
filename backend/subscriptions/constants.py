@@ -1,7 +1,6 @@
 PLAN_FREE = 'free'
 PLAN_BASIC = 'basic'
 PLAN_PREMIUM = 'premium'
-PLAN_DOCTOR = 'doctor'
 
 FEATURE_EMOTION_DETECTION_LIMITED = 'emotion_detection_limited'
 FEATURE_EMOTION_DETECTION_FULL = 'emotion_detection_full'

@@ -11,12 +11,9 @@ import '../main_shell_screen.dart';
 import '../../config/api_config.dart';
 import '../../models/seven_day_studio_report.dart';
 import '../../services/local_auth_service.dart';
-import '../../services/screen_time_service.dart';
 import '../../services/tracking_permissions_gate.dart';
 import '../../services/user_session_cache.dart';
-import '../../services/wellness_dashboard_service.dart';
 import '../../services/week_report_pdf.dart';
-import '../../utils/mental_health_severity.dart';
 import '../../widgets/report/stitch_report_widgets.dart';
 
 class ReportScreen extends StatefulWidget {
@@ -73,7 +70,7 @@ class _ReportScreenState extends State<ReportScreen> {
     await Future.wait([
       _loadWeeklyReportPayload(),
       _loadPastReports(),
-      WellnessDashboardService.instance.refresh(force: true),
+      _loadProfile(),
     ]);
     if (mounted) setState(() => _loading = false);
   }
@@ -214,97 +211,27 @@ class _ReportScreenState extends State<ReportScreen> {
     return null;
   }
 
-  SevenDayStudioReport get _effectiveStudio =>
-      _enrichFromWellness(
-        _studio ??
-            SevenDayStudioReport.empty(name: _displayName, email: _displayEmail),
-      );
-
-  /// Uses the same [WellnessDashboardService] payload as Home for hero scores.
-  SevenDayStudioReport _enrichFromWellness(SevenDayStudioReport base) {
-    final dash = WellnessDashboardService.instance.dashboard.value;
-    final mh = dash.mentalHealth;
-    final snap = ScreenTimeService.instance.snapshot.value;
-    final dashActive = dash.wellbeingScore > 0 || mh.hasData;
-
-    int? wellbeing;
-    int? wellnessIdx;
-    int? stress;
-    int? anxiety;
-    int? depression;
-    String moodStatus = base.summary.moodStatus;
-    int screenMin = base.summary.screenOnMinutes;
-    int chunks = base.summary.analysedVideoChunks;
-
-    if (dashActive) {
-      wellbeing = dash.wellbeingScore.clamp(0, 100);
-      wellnessIdx = dash.mentalHealthScore.clamp(0, 100);
-      if (mh.hasData) {
-        stress = MentalHealthSeverity.percentRounded(mh.stress.score);
-        anxiety = MentalHealthSeverity.percentRounded(mh.anxiety.score);
-        depression = MentalHealthSeverity.percentRounded(mh.depression.score);
-      }
-      if (dash.dominantMoodWeek.isNotEmpty && dash.dominantMoodWeek != 'neutral') {
-        moodStatus = dash.dominantMoodWeek;
-      }
-      if (dash.screenMinutesWeek > 0) screenMin = dash.screenMinutesWeek;
-      if (dash.totalChunks > 0) chunks = dash.totalChunks;
-    } else {
-      wellbeing = base.summary.wellbeingScore;
-      wellnessIdx = base.summary.mentalWellnessIndex;
-      stress = base.summary.stress;
-      anxiety = base.summary.anxiety;
-      depression = base.summary.depression;
-      if (screenMin <= 0 && snap.weekSeconds > 0) {
-        screenMin = (snap.weekSeconds / 60).round();
-      }
-    }
-
-    final insights = base.mentalHealthInsights.isNotEmpty
-        ? base.mentalHealthInsights
-        : (dash.facetSummary.isNotEmpty ? [dash.facetSummary] : const <String>[]);
-
+  /// Weekly report API is the single source of truth; only overlay logged-in profile.
+  SevenDayStudioReport get _effectiveStudio {
+    final base = _studio ??
+        SevenDayStudioReport.empty(name: _displayName, email: _displayEmail);
+    final name = _displayName.trim().isNotEmpty
+        ? _displayName.trim()
+        : base.user.name;
+    final email = _displayEmail.trim().isNotEmpty
+        ? _displayEmail.trim()
+        : base.user.email;
+    if (name == base.user.name && email == base.user.email) return base;
     return SevenDayStudioReport(
-      user: StudioUser(
-        name: base.user.name.isNotEmpty ? base.user.name : _displayName,
-        email: base.user.email.isNotEmpty ? base.user.email : _displayEmail,
-        avatar: base.user.avatar,
-      ),
+      user: StudioUser(name: name, email: email, avatar: base.user.avatar),
       range: base.range,
-      summary: StudioSummary(
-        wellbeingScore: wellbeing,
-        mentalWellnessIndex: wellnessIdx,
-        stress: stress,
-        anxiety: anxiety,
-        depression: depression,
-        analysedVideoChunks: chunks,
-        screenOnMinutes: screenMin,
-        dominantMoodTrend: base.summary.dominantMoodTrend.isNotEmpty
-            ? base.summary.dominantMoodTrend
-            : dash.dominantMoodWeek,
-        moodStatus: moodStatus,
-      ),
+      summary: base.summary,
       pastReports: base.pastReports,
       dailyMentalHealth: base.dailyMentalHealth,
-      contentTypeAnalytics: base.contentTypeAnalytics.isNotEmpty
-          ? base.contentTypeAnalytics
-          : dash.contentBuckets
-              .map(
-                (b) => StudioContentType(
-                  label: (b['label'] ?? 'Other').toString(),
-                  count: (b['count'] as num?)?.toInt() ?? 0,
-                  percent: (b['percent'] as num?)?.toInt() ?? 0,
-                ),
-              )
-              .toList(),
-      mentalHealthInsights: insights,
-      metricCards: _syncMetricCards(base.metricCards, wellbeing, screenMin, moodStatus),
-      wellbeing: StudioWellbeing(
-        score: wellbeing ?? base.wellbeing.score,
-        message: base.wellbeing.message,
-        usageCategories: base.wellbeing.usageCategories,
-        recommendation: base.wellbeing.recommendation,
-      ),
+      contentTypeAnalytics: base.contentTypeAnalytics,
+      mentalHealthInsights: base.mentalHealthInsights,
+      metricCards: base.metricCards,
+      wellbeing: base.wellbeing,
       charts: base.charts,
       sleepQuality: base.sleepQuality,
       riskSummary: base.riskSummary,
@@ -313,36 +240,6 @@ class _ReportScreenState extends State<ReportScreen> {
       metricsStatus: base.metricsStatus,
       clinicalSummary: base.clinicalSummary,
       conditionAveragesLine: base.conditionAveragesLine,
-    );
-  }
-
-  StudioMetricCards _syncMetricCards(
-    StudioMetricCards cards,
-    int? wellbeing,
-    int screenMin,
-    String mood,
-  ) {
-    final avgScreen = screenMin > 0
-        ? StudioMetricCard(
-            label: cards.avgScreen.label,
-            display: '${(screenMin / 7).round()}m/d',
-            status: cards.avgScreen.status,
-            value: screenMin / 7,
-          )
-        : cards.avgScreen;
-    final wb = wellbeing != null
-        ? StudioMetricCard(
-            label: cards.wellbeing.label,
-            display: '$wellbeing',
-            status: MentalHealthSeverity.labelFromPercent(wellbeing),
-            value: wellbeing,
-          )
-        : cards.wellbeing;
-    return StudioMetricCards(
-      avgScreen: avgScreen,
-      mood: cards.mood,
-      sleep: cards.sleep,
-      wellbeing: wb,
     );
   }
 
@@ -485,12 +382,7 @@ class _ReportScreenState extends State<ReportScreen> {
                     ),
                   ),
                 ),
-              Expanded(
-                child: ValueListenableBuilder<WellnessDashboardData>(
-                  valueListenable: WellnessDashboardService.instance.dashboard,
-                  builder: (context, dash, _) => _buildReportBody(),
-                ),
-              ),
+              Expanded(child: _buildReportBody()),
             ],
           ),
         ),
@@ -533,7 +425,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 const SizedBox(height: ReportLayout.sectionGap),
                 _buildWellbeingDetail(studio),
                 const SizedBox(height: ReportLayout.sectionGap),
-                _buildSleepTriggerMood(),
+                _buildSleepTriggerMood(studio),
                 const SizedBox(height: ReportLayout.sectionGap),
                 _buildDailyScreenTrend(studio),
                 const SizedBox(height: ReportLayout.sectionGap),
@@ -747,7 +639,7 @@ class _ReportScreenState extends State<ReportScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const StitchSectionTitle('Mental State (7 Days)'),
+          const StitchSectionTitle('Daily Depression (7 Days)'),
           const SizedBox(height: 10),
           StitchMentalStateChart(days: studio.dailyMentalHealth, footer: footer),
         ],
@@ -756,7 +648,7 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   String _mentalStateFooter(SevenDayStudioReport studio) {
-    final withData = studio.dailyMentalHealth.where((d) => d.stress != null).length;
+    final withData = studio.dailyMentalHealth.where((d) => d.depression != null).length;
     if (withData == 0) return 'No data available';
     if (withData < 7) return 'Partial data on $withData day(s)';
     return 'Full week data';
@@ -821,7 +713,57 @@ class _ReportScreenState extends State<ReportScreen> {
               final warn = c.label.toLowerCase().contains('switch');
               return StitchProgressRow(label: c.label, percent: c.percent, warning: warn);
             }),
-          if (wb.recommendation.isNotEmpty) ...[
+          if (wb.recommendationSections.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            const Text(
+              'AI RECOMMENDATIONS',
+              style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.4, color: ReportStudioTheme.muted),
+            ),
+            const SizedBox(height: 8),
+            ...wb.recommendationSections.map((sec) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(sec.title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 4),
+                    ...sec.bullets.map(
+                      (b) => Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('• ', style: TextStyle(fontSize: 11, color: ReportStudioTheme.purple)),
+                            Expanded(child: Text(b, style: const TextStyle(fontSize: 11, height: 1.35))),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ] else if (wb.recommendations.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            const Text(
+              'AI RECOMMENDATIONS',
+              style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.4, color: ReportStudioTheme.muted),
+            ),
+            const SizedBox(height: 8),
+            ...wb.recommendations.take(6).map(
+              (b) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('• ', style: TextStyle(fontSize: 11, color: ReportStudioTheme.purple)),
+                    Expanded(child: Text(b, style: const TextStyle(fontSize: 11, height: 1.35))),
+                  ],
+                ),
+              ),
+            ),
+          ] else if (wb.recommendation.isNotEmpty) ...[
             const SizedBox(height: 12),
             Container(
               width: double.infinity,
@@ -841,15 +783,26 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
-  Widget _buildSleepTriggerMood() {
+  Widget _buildSleepTriggerMood(SevenDayStudioReport studio) {
+    final sleep = studio.sleepQuality;
+    final days = sleep.daily.length >= 7
+        ? sleep.daily.take(7).toList()
+        : sleep.daily;
     return StitchCard(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: const [
-          StitchSectionTitle('Sleep & Trigger Mood'),
-          SizedBox(height: 10),
-          StitchWeekdayDotStrip(),
+        children: [
+          const StitchSectionTitle('Sleep & Late-Night Activity'),
+          const SizedBox(height: 6),
+          Text(
+            sleep.trackedNights > 0
+                ? '${sleep.trackedNights} tracked night(s) · ${sleep.lateNightHours.toStringAsFixed(1)}h late-night total'
+                : '${sleep.lateNightHours.toStringAsFixed(1)}h late-night screen use this week',
+            style: const TextStyle(fontSize: 10, color: ReportStudioTheme.muted),
+          ),
+          const SizedBox(height: 10),
+          StitchSleepLateNightWeek(days: days),
         ],
       ),
     );
@@ -903,9 +856,7 @@ class _ReportScreenState extends State<ReportScreen> {
 
   Widget _buildSleepQuality(SevenDayStudioReport studio) {
     final sleep = studio.sleepQuality;
-    final desc = sleep.score != null && sleep.score! >= 75
-        ? 'Your sleep patterns look consistent this week. Maintain your current pre-sleep routine for steady recovery.'
-        : sleep.message;
+    final desc = sleep.message;
     return StitchCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

@@ -38,7 +38,10 @@ class UserSessionCache {
   static Future<void> onUserSessionReady() async {
     await SubscriptionService.instance.getCurrentSubscription(forceRefresh: true);
     await PlanAccessService.instance.refresh(force: true);
-    await WellnessDashboardService.instance.refresh(force: true);
+    await Future.wait([
+      WellnessDashboardService.instance.refreshHome(force: true),
+      WellnessDashboardService.instance.refresh(force: true),
+    ]);
     WeeklyMoodService.instance.startPolling();
     unawaited(NotificationService.instance.syncTriggers());
     NotificationService.instance.startPolling();

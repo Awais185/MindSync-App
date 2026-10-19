@@ -297,26 +297,44 @@ class FaceVerifyView(views.APIView):
 
         matched = bool(result.get('matched'))
         probability = float(result.get('probability') or 0.0)
-        return response.Response(
-            {
-                'allowed': matched,
-                'matched': matched,
-                'match': matched,
-                'similarity': probability,
-                'similarity_percent': round(probability * 100.0, 2),
-                'probability': result.get('probability'),
-                'distance': result.get('distance'),
-                'threshold': result.get('threshold'),
-                'status': result.get('status'),
-                'method': result.get('method'),
-                'reject_reason': result.get('reject_reason'),
-                'warning': None
-                if matched
-                else 'Face does not match enrolled profile. Tracking and recording are disabled.',
-                **{k: v for k, v in result.items() if k.startswith('laplacian') or k == 'face_area_percent'},
-            },
-            status=status.HTTP_200_OK,
-        )
+        body = {
+            'allowed': matched,
+            'matched': matched,
+            'match': matched,
+            'similarity': probability,
+            'similarity_percent': round(probability * 100.0, 2),
+            'probability': result.get('probability'),
+            'distance': result.get('distance'),
+            'threshold': result.get('threshold'),
+            'status': result.get('status'),
+            'method': result.get('method'),
+            'reject_reason': result.get('reject_reason'),
+            'warning': None
+            if matched
+            else 'Face does not match enrolled profile. Tracking and recording are disabled.',
+            **{k: v for k, v in result.items() if k.startswith('laplacian') or k == 'face_area_percent'},
+        }
+        if matched:
+            try:
+                from face_detection.mood_scan_service import run_image_mood_on_match
+
+                mood_source = 'unlock_verify' if unlock_capture else 'verify_track'
+                mood_payload = run_image_mood_on_match(
+                    request.user,
+                    uploaded,
+                    source=mood_source,
+                )
+                if mood_payload and mood_payload.get('skipped'):
+                    body['mood_saved'] = False
+                    body['mood_skipped'] = True
+                    body['mood_message'] = mood_payload.get('message')
+                elif mood_payload and not mood_payload.get('skipped'):
+                    body['mood'] = mood_payload
+                    body['mood_saved'] = True
+                    body['mood_message'] = mood_payload.get('message')
+            except Exception:
+                body['mood_saved'] = False
+        return response.Response(body, status=status.HTTP_200_OK)
 
 
 class FaceVerificationEventView(views.APIView):

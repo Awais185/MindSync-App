@@ -26,11 +26,11 @@ def user_allows_adult_ml(user: User | None) -> bool:
     if profile is None:
         return False
     age_range = (getattr(profile, "age_range", None) or "").strip()
-    if not age_range:
-        return False
     if age_range == _CHILD_AGE_RANGE:
         return False
     if age_range in _ADULT_AGE_RANGES:
         return True
-    # Unknown label — treat as child-safe default.
+    # Empty or unknown age range: allow unlock mood scans (legacy signups); only 4–15 is blocked.
+    if not age_range:
+        return True
     return False

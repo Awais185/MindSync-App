@@ -5,13 +5,15 @@
 Django>=5.0,<7
 psycopg[binary]>=3.1,<4
 djangorestframework>=3.14
+drf-spectacular>=0.27.0
 django-cors-headers>=4.3
 django-celery-beat>=2.6
 djangorestframework-simplejwt>=5.3
 python-dotenv>=1.0
 Pillow>=10.0
-numpy>=1.24.0
+numpy>=1.26.4,<2
 redis>=5.0
 stripe>=10.0
 requests>=2.31
 PyYAML>=6.0
+fastmcp>=2.0.0

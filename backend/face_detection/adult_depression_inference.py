@@ -153,7 +153,11 @@ def _scores_from_probabilities(
     classes: np.ndarray,
     class_names: dict[int, str],
 ) -> dict[str, Any]:
-    probs = {int(c): float(mean_prob[j]) for j, c in enumerate(classes)}
+    from .json_safe import finite_float
+
+    probs = {
+        int(c): finite_float(mean_prob[j], 0.0) for j, c in enumerate(classes)
+    }
     pct = {
         class_names.get(int(c), f"Class_{c}"): round(probs[int(c)] * 100.0, 2)
         for c in classes
@@ -186,6 +190,7 @@ def _scores_from_probabilities(
             "predicted_class_id": best_id,
             "average_class_probabilities_percent": pct,
             "warning": _RESEARCH_WARNING,
+            "input_source": "openface_csv",
         },
         "analysis_source": "adult_depression_mlp",
         "active_aus": [],
@@ -247,6 +252,94 @@ def predict_openface_csv(
             )
         out["depression_model"]["windows"] = windows
 
+    return out
+
+
+def _au_sample_to_openface_row(
+    sample: dict[str, float],
+    feature_names: list[str],
+) -> list[float]:
+    """Map MindSync AU proxies (AU04, …) to OpenFace CSV columns (AU04_r, AU04_c, …)."""
+    row: list[float] = []
+    for feat in feature_names:
+        if feat.endswith("_r"):
+            base = feat[:-2]
+            val = float(sample.get(feat, sample.get(base, 0.0)) or 0.0)
+            row.append(val)
+        elif feat.endswith("_c"):
+            base = feat[:-2]
+            intensity = float(
+                sample.get(feat, sample.get(base, sample.get(f"{base}_r", 0.0))) or 0.0
+            )
+            row.append(1.0 if intensity >= 0.35 else 0.0)
+        else:
+            row.append(float(sample.get(feat, 0.0) or 0.0))
+    return row
+
+
+def predict_from_au_frame_samples(
+    samples: list[dict[str, float]],
+    *,
+    window_frames: int = DEFAULT_WINDOW_FRAMES,
+    min_frames: int = 8,
+) -> dict[str, Any] | None:
+    """
+    Run the adult depression MLP on per-frame AU proxies (MediaPipe / emotion fusion)
+    when OpenFace CSV is unavailable (e.g. macOS dev).
+    """
+    if len(samples) < min_frames:
+        return None
+    bundle = _load_weights()
+    feature_names = list(bundle["features"])
+    matrix = np.asarray(
+        [_au_sample_to_openface_row(s, feature_names) for s in samples],
+        dtype=np.float64,
+    )
+    if matrix.size == 0:
+        return None
+
+    probabilities = predict_proba_matrix(matrix)
+    try:
+        model, _feature_names, joblib_bundle = _load_joblib_model()
+        classes = np.asarray(
+            getattr(model, "classes_", bundle.get("classes_", [0, 1, 2, 3]))
+        )
+        card = joblib_bundle.get("card", {}).get("classes", {}) if isinstance(
+            joblib_bundle.get("card"), dict
+        ) else {}
+        class_names = (
+            {int(k): str(v) for k, v in card.items()} if card else dict(CLASS_NAMES)
+        )
+    except Exception:
+        classes = bundle["classes_"]
+        class_names = bundle["class_names"]
+
+    overall_prob = probabilities.mean(axis=0)
+    out = _scores_from_probabilities(overall_prob, classes, class_names)
+    out["depression_model"]["total_frames"] = len(samples)
+    out["depression_model"]["valid_frames"] = int(len(matrix))
+    out["depression_model"]["dropped_frames"] = 0
+    out["depression_model"]["window_frames"] = int(window_frames)
+    out["depression_model"]["input_source"] = "au_frame_samples"
+    out["analysis_source"] = "adult_depression_mlp_au_proxy"
+
+    if window_frames > 0 and len(probabilities) > 0:
+        windows: list[dict[str, Any]] = []
+        for start in range(0, len(probabilities), window_frames):
+            end = min(start + window_frames, len(probabilities))
+            wprob = probabilities[start:end].mean(axis=0)
+            win = _scores_from_probabilities(wprob, classes, class_names)
+            windows.append(
+                {
+                    "start_frame": start,
+                    "end_frame_exclusive": end,
+                    "predicted_label": win["depression_model"]["predicted_label"],
+                    "probabilities_percent": win["depression_model"][
+                        "average_class_probabilities_percent"
+                    ],
+                }
+            )
+        out["depression_model"]["windows"] = windows
     return out
 
 

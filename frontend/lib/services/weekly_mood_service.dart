@@ -8,6 +8,9 @@ import '../config/api_config.dart';
 import '../utils/resilient_http.dart' show getWithRetry;
 import 'wellness_dashboard_service.dart';
 
+/// Rolling window for home Weekly Mood card (always 7 calendar days).
+const int kWeeklyMoodDays = 7;
+
 class MoodDayMedia {
   const MoodDayMedia({required this.type, required this.url, this.id});
 
@@ -144,8 +147,10 @@ class RecentMoodEntry {
 
 class WeeklyMoodLiveData {
   const WeeklyMoodLiveData({
+    required this.hasGraphData,
     required this.hasSummary,
     required this.placeholder,
+    required this.latestMood,
     required this.dominantMood,
     required this.overallMood,
     required this.moodDistribution,
@@ -156,8 +161,10 @@ class WeeklyMoodLiveData {
     this.updatedAt,
   });
 
+  final bool hasGraphData;
   final bool hasSummary;
   final String? placeholder;
+  final String latestMood;
   final String dominantMood;
   final OverallMoodSummary overallMood;
   final List<MoodDistributionItem> moodDistribution;
@@ -168,8 +175,10 @@ class WeeklyMoodLiveData {
   final String? updatedAt;
 
   static const empty = WeeklyMoodLiveData(
+    hasGraphData: false,
     hasSummary: false,
-    placeholder: 'Not enough data yet',
+    placeholder: 'Unlock your phone to capture mood',
+    latestMood: '',
     dominantMood: '',
     overallMood: OverallMoodSummary.empty,
     moodDistribution: [],
@@ -180,8 +189,10 @@ class WeeklyMoodLiveData {
   );
 
   factory WeeklyMoodLiveData.fromJson(Map<String, dynamic> j) => WeeklyMoodLiveData(
+        hasGraphData: j['has_graph_data'] == true || (j['entry_count'] as num? ?? 0) > 0,
         hasSummary: j['has_summary'] == true,
         placeholder: j['placeholder']?.toString(),
+        latestMood: (j['latest_mood'] ?? '').toString(),
         dominantMood: (j['dominant_mood'] ?? '').toString(),
         overallMood: OverallMoodSummary.fromJson(
           j['overall_mood'] as Map<String, dynamic>?,
@@ -194,6 +205,8 @@ class WeeklyMoodLiveData {
         days: ((j['days'] as List<dynamic>?) ?? const [])
             .whereType<Map<String, dynamic>>()
             .map(MoodDayEntry.fromJson)
+            .toList()
+            .take(kWeeklyMoodDays)
             .toList(),
         recentEntries: ((j['recent_entries'] as List<dynamic>?) ?? const [])
             .whereType<Map<String, dynamic>>()
@@ -252,7 +265,13 @@ class WeeklyMoodService {
       if (decoded is Map<String, dynamic>) {
         live.value = WeeklyMoodLiveData.fromJson(decoded);
       }
-      unawaited(WellnessDashboardService.instance.refresh(force: true));
+      unawaited(WellnessDashboardService.instance.refreshHome(force: true));
+      unawaited(
+        WellnessDashboardService.instance.refresh(
+          force: true,
+          days: kReportWellnessWindowDays,
+        ),
+      );
     } catch (_) {
       // Keep last good value.
     } finally {

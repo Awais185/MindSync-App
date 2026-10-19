@@ -15,7 +15,7 @@ import '../../services/tracking_permissions_gate.dart';
 import '../../services/wellness_dashboard_service.dart';
 import '../../services/weekly_mood_service.dart';
 import '../../widgets/mental_health_insights_gate.dart';
-import '../pages/upgrade_plan_screen.dart';
+import 'home/home_emotional_resilience.dart';
 import 'home/home_hero_metrics.dart';
 import 'home/home_screen_helpers.dart';
 
@@ -34,7 +34,13 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   void initState() {
     super.initState();
     unawaited(_bootstrapScreenTime());
-    unawaited(WellnessDashboardService.instance.refresh(force: true));
+    unawaited(WellnessDashboardService.instance.refreshHome(force: true));
+    unawaited(
+      WellnessDashboardService.instance.refresh(
+        force: true,
+        days: kReportWellnessWindowDays,
+      ),
+    );
     WeeklyMoodService.instance.startPolling();
     AppPublicService.instance.loadBranding(forceRefresh: false);
     _loadProfile();
@@ -45,6 +51,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
     final userId = await _auth.getStoredUserId();
     await ScreenTimeService.instance.ensureMonitoringForUser(userId);
     await ScreenTimeService.instance.refreshMonitoringStateFromNative();
+    await ScreenTimeService.instance.refreshRollingAppUsage();
   }
 
   @override
@@ -67,13 +74,27 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   @override
   void didPush() {
     unawaited(_bootstrapScreenTime());
-    unawaited(WellnessDashboardService.instance.refresh(force: true));
+    unawaited(WellnessDashboardService.instance.refreshHome(force: true));
+    unawaited(
+      WellnessDashboardService.instance.refresh(
+        force: true,
+        days: kReportWellnessWindowDays,
+      ),
+    );
+    unawaited(WeeklyMoodService.instance.refresh());
   }
 
   @override
   void didPopNext() {
     unawaited(_bootstrapScreenTime());
-    unawaited(WellnessDashboardService.instance.refresh(force: true));
+    unawaited(WellnessDashboardService.instance.refreshHome(force: true));
+    unawaited(
+      WellnessDashboardService.instance.refresh(
+        force: true,
+        days: kReportWellnessWindowDays,
+      ),
+    );
+    unawaited(WeeklyMoodService.instance.refresh());
   }
 
   Future<void> _loadProfile() async {
@@ -162,17 +183,21 @@ class _HeroBalanceCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: Listenable.merge([
+        WellnessDashboardService.instance.homeDashboard,
         WellnessDashboardService.instance.dashboard,
         WellnessDashboardService.instance.wellbeingDeltaPoints,
         ScreenTimeService.instance.snapshot,
         ScreenTimeService.instance.rollingAppUsage,
       ]),
       builder: (context, _) {
-        final wellness = WellnessDashboardService.instance.dashboard.value;
+        final wellness = WellnessDashboardService.instance.homeDashboard.value;
+        final reportWellness =
+            WellnessDashboardService.instance.dashboard.value;
         final screen = ScreenTimeService.instance.snapshot.value;
         final st = ScreenTimeService.instance;
         final metrics = HomeHeroMetrics.compose(
           wellness: wellness,
+          reportWellness: reportWellness,
           screen: screen,
           yesterdayDaySeconds: st.homeYesterdayDaySeconds,
           backendSleepSeconds: st.homeBackendSleepSeconds,
@@ -181,9 +206,14 @@ class _HeroBalanceCard extends StatelessWidget {
               WellnessDashboardService.instance.wellbeingDeltaPoints.value,
           rollingApps: ScreenTimeService.instance.rollingAppUsage.value,
         );
+        final showWellbeing = metrics.wellbeingScore > 0 ||
+            wellness.hasWellbeingSignal ||
+            reportWellness.hasWellbeingSignal ||
+            wellness.mentalHealth.hasData ||
+            wellness.totalChunks > 0;
         final scoreText = metrics.wellbeingScore > 0
             ? '${metrics.wellbeingScore}'
-            : '—';
+            : (showWellbeing ? '…' : '—');
 
         return Container(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
@@ -214,16 +244,18 @@ class _HeroBalanceCard extends StatelessWidget {
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
-              children: const [
-                Icon(
+              children: [
+                const Icon(
                   Icons.check_circle_rounded,
                   size: 13,
                   color: Color(0xFFB9F0C0),
                 ),
-                SizedBox(width: 6),
+                const SizedBox(width: 6),
                 Text(
-                  'Restorative Day',
-                  style: TextStyle(
+                  showWellbeing
+                      ? 'Restorative · $scoreText/100 · ${kHomeWellnessWindowDays}-day'
+                      : 'Restorative Day',
+                  style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     color: Colors.white,
@@ -405,6 +437,11 @@ class _HeroBalanceCard extends StatelessWidget {
                   label: 'Habit Guidance',
                   value: metrics.habitValue,
                   caption: metrics.habitCaption,
+                  appIconBytes: decodeAppIconBase64(
+                    metrics.topHabitApp?.iconPngBase64,
+                  ),
+                  appPackageName: metrics.topHabitApp?.packageName ?? '',
+                  appDisplayName: metrics.topHabitApp?.appName ?? '',
                 ),
               ),
             ],
@@ -424,6 +461,9 @@ class _HeroStatTile extends StatelessWidget {
     required this.label,
     required this.value,
     required this.caption,
+    this.appIconBytes,
+    this.appPackageName = '',
+    this.appDisplayName = '',
   });
 
   final IconData icon;
@@ -431,6 +471,9 @@ class _HeroStatTile extends StatelessWidget {
   final String label;
   final String value;
   final String caption;
+  final Uint8List? appIconBytes;
+  final String appPackageName;
+  final String appDisplayName;
 
   @override
   Widget build(BuildContext context) {
@@ -464,16 +507,38 @@ class _HeroStatTile extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          Text(
-            value,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              color: Colors.white,
-              letterSpacing: -0.3,
-            ),
+          Row(
+            children: [
+              if (appIconBytes != null && appIconBytes!.isNotEmpty) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: Image.memory(
+                    appIconBytes!,
+                    width: 20,
+                    height: 20,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _habitFallbackIcon(),
+                  ),
+                ),
+                const SizedBox(width: 6),
+              ] else if (appDisplayName.isNotEmpty) ...[
+                _habitFallbackIcon(),
+                const SizedBox(width: 6),
+              ],
+              Expanded(
+                child: Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                    letterSpacing: -0.3,
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 3),
           Text(
@@ -487,6 +552,27 @@ class _HeroStatTile extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _habitFallbackIcon() {
+    if (appDisplayName.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final style = _styleForApp(appDisplayName, packageName: appPackageName);
+    return Container(
+      width: 20,
+      height: 20,
+      decoration: BoxDecoration(
+        color: style.iconBg.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      alignment: Alignment.center,
+      child: Icon(
+        style.brandIcon ?? style.icon,
+        size: 12,
+        color: Colors.white,
       ),
     );
   }
@@ -817,6 +903,7 @@ class _MentalHealthCard extends StatelessWidget {
       padding: const EdgeInsets.all(18),
       decoration: _sectionDecoration(),
       child: MentalHealthInsightsGate(
+        dashboardListenable: WellnessDashboardService.instance.homeDashboard,
         builder: (context, access) {
           const header = Row(
             children: [
@@ -834,15 +921,19 @@ class _MentalHealthCard extends StatelessWidget {
             ],
           );
 
-          // NO DATA / NO PLAN → placeholders with 0 values
-          if (!access.hasPaidPlan || !access.hasMinimumExpressions) {
+          final hasOpenFace = access.dashboard.openfaceCaptureCount > 0;
+          final showLive =
+              access.hasPaidPlan &&
+              (access.hasMinimumExpressions || hasOpenFace);
+
+          if (!showLive) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 header,
                 const SizedBox(height: 4),
                 const Text(
-                  'Live bio-sync snapshot of your current state',
+                  '3-day rolling · OpenFace background video',
                   style: TextStyle(
                     fontSize: 12.5,
                     color: Color(0xFF8A8D99),
@@ -850,41 +941,43 @@ class _MentalHealthCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
-                _BioMetricRow(
+                const _BioMetricRow(
                   label: 'Stress Load',
-                  subtitle: 'Screen density influence',
+                  subtitle: 'From ~30s background face analysis',
                   scorePercent: 0,
                   barColor: MentalHealthSeverity.stressInsightBarColor,
                   rightLabel: 'Calm',
+                  showPercent: true,
                 ),
                 const SizedBox(height: 16),
-                _BioMetricRow(
-                  label: 'Anxiety Baseline',
-                  subtitle: 'HRV respiratory stability',
-                  scorePercent: 0,
-                  barColor: MentalHealthSeverity.anxietyInsightBarColor,
-                  rightLabel: 'Calm',
-                ),
-                const SizedBox(height: 16),
-                _BioMetricRow(
-                  label: 'Emotional Resilience',
-                  subtitle: 'Cognitive recovery capacity',
+                const _BioMetricRow(
+                  label: 'Depression Screening',
+                  subtitle: 'OpenFace AU + depression model',
                   scorePercent: 0,
                   barColor: MentalHealthSeverity.depressionInsightBarColor,
                   rightLabel: 'Calm',
+                  showPercent: true,
+                ),
+                const SizedBox(height: 20),
+                HomeEmotionalResilienceSegmentBar(
+                  days: _placeholderResilienceDays(),
                 ),
               ],
             );
           }
 
           final mh = access.dashboard.mentalHealth;
+          final resilienceDays = access.dashboard.emotionalResilienceDays;
+          final resilienceSlots = resilienceDays.length >= kHomeWellnessWindowDays
+              ? resilienceDays
+              : _placeholderResilienceDays();
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               header,
               const SizedBox(height: 4),
               const Text(
-                'Live bio-sync snapshot of your current state',
+                '3-day rolling · OpenFace background video',
                 style: TextStyle(
                   fontSize: 12.5,
                   color: Color(0xFF8A8D99),
@@ -894,27 +987,23 @@ class _MentalHealthCard extends StatelessWidget {
               const SizedBox(height: 16),
               _BioMetricRow(
                 label: 'Stress Load',
-                subtitle: 'Screen density influence',
+                subtitle: 'From ~30s background face analysis',
                 scorePercent: mh.stress.score,
                 barColor: MentalHealthSeverity.stressInsightBarColor,
                 rightLabel: _severityLabel(mh.stress.score),
+                showPercent: true,
               ),
               const SizedBox(height: 16),
               _BioMetricRow(
-                label: 'Anxiety Baseline',
-                subtitle: 'HRV respiratory stability',
-                scorePercent: mh.anxiety.score,
-                barColor: MentalHealthSeverity.anxietyInsightBarColor,
-                rightLabel: _severityLabel(mh.anxiety.score),
-              ),
-              const SizedBox(height: 16),
-              _BioMetricRow(
-                label: 'Emotional Resilience',
-                subtitle: 'Cognitive recovery capacity',
+                label: 'Depression Screening',
+                subtitle: 'OpenFace AU + depression model',
                 scorePercent: mh.depression.score,
                 barColor: MentalHealthSeverity.depressionInsightBarColor,
                 rightLabel: _severityLabel(mh.depression.score),
+                showPercent: true,
               ),
+              const SizedBox(height: 20),
+              HomeEmotionalResilienceSegmentBar(days: resilienceSlots),
             ],
           );
         },
@@ -968,12 +1057,29 @@ class _LivePill extends StatelessWidget {
   }
 }
 
+List<EmotionalResilienceDay> _placeholderResilienceDays() {
+  const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  final today = DateTime.now();
+  return List.generate(kHomeWellnessWindowDays, (i) {
+    final d = today.subtract(Duration(days: kHomeWellnessWindowDays - 1 - i));
+    return EmotionalResilienceDay(
+      date: '',
+      dayName: labels[d.weekday - 1],
+      emotionLabel: 'Awaiting scan',
+      resilienceFill: 0,
+      samples: 0,
+      tone: 'neutral',
+    );
+  });
+}
+
 class _BioMetricRow extends StatelessWidget {
   final String label;
   final String subtitle;
   final num scorePercent;
   final Color barColor;
   final String rightLabel;
+  final bool showPercent;
 
   const _BioMetricRow({
     required this.label,
@@ -981,6 +1087,7 @@ class _BioMetricRow extends StatelessWidget {
     required this.scorePercent,
     required this.barColor,
     required this.rightLabel,
+    this.showPercent = true,
   });
 
   @override
@@ -1021,26 +1128,36 @@ class _BioMetricRow extends StatelessWidget {
                   ],
                 ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  MentalHealthScoreDisplay(
-                    percent: scorePercent,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                    labelFontWeight: FontWeight.w800,
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    rightLabel,
-                    style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF8A8D99),
+              if (showPercent)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    MentalHealthScoreDisplay(
+                      percent: scorePercent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      labelFontWeight: FontWeight.w800,
                     ),
+                    const SizedBox(height: 2),
+                    Text(
+                      rightLabel,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF8A8D99),
+                      ),
+                    ),
+                  ],
+                )
+              else
+                Text(
+                  rightLabel,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF8A8D99),
                   ),
-                ],
-              ),
+                ),
             ],
           ),
           const SizedBox(height: 10),
@@ -1078,11 +1195,30 @@ class _WeeklyMoodCardDynamic extends StatelessWidget {
     'Sun',
   ];
 
-  Widget _buildWeekLabels(List<MoodDayEntry> days) {
+  String _weekdayFromDate(String isoDate) {
+    if (isoDate.length < 10) return '';
+    try {
+      final dt = DateTime.parse(isoDate);
+      final idx = dt.weekday - 1;
+      if (idx >= 0 && idx < _weekdayLabels.length) {
+        return _weekdayLabels[idx];
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  Widget _buildDayLabels(List<MoodDayEntry> days) {
+    final slots = kWeeklyMoodDays;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: List.generate(7, (i) {
-        final weekday = i < _weekdayLabels.length ? _weekdayLabels[i] : '';
+      children: List.generate(slots, (i) {
+        String weekday = '';
+        if (i < days.length) {
+          weekday = _weekdayFromDate(days[i].date);
+          if (weekday.isEmpty && days[i].graphLabel.isNotEmpty) {
+            weekday = days[i].graphLabel;
+          }
+        }
         return Expanded(
           child: Text(
             weekday,
@@ -1111,17 +1247,34 @@ class _WeeklyMoodCardDynamic extends StatelessWidget {
           final List<String> graphLabels;
           final List<String> graphCats;
 
-          if (mood.hasSummary) {
-            graphScores = mood.days.map((d) => d.moodScore ?? 0.5).toList();
-            graphLabels = mood.days
-                .map((d) => d.entries > 0 ? d.graphLabel : '')
+          final weekDays = mood.days.length >= kWeeklyMoodDays
+              ? mood.days
+              : (mood.days.isEmpty
+                  ? List<MoodDayEntry>.generate(
+                      kWeeklyMoodDays,
+                      (_) => const MoodDayEntry(
+                        date: '',
+                        label: '',
+                        graphLabel: '',
+                        moodScore: null,
+                        moodCategory: 'neutral',
+                        entries: 0,
+                        media: [],
+                      ),
+                    )
+                  : mood.days);
+          if (mood.hasGraphData && weekDays.any((d) => d.entries > 0)) {
+            graphScores = weekDays
+                .map((d) => d.entries > 0 ? (d.moodScore ?? 0.5) : 0.0)
                 .toList();
-            graphCats = mood.days.map((d) => d.moodCategory).toList();
+            graphLabels = weekDays
+                .map((d) => d.entries > 0 ? (d.label.isNotEmpty ? d.label : d.graphLabel) : '')
+                .toList();
+            graphCats = weekDays.map((d) => d.moodCategory).toList();
           } else {
-            // Placeholder: 7 days, all 0, no labels
-            graphScores = List.filled(7, 0.0);
-            graphLabels = List.filled(7, '');
-            graphCats = List.filled(7, 'neutral');
+            graphScores = List.filled(kWeeklyMoodDays, 0.0);
+            graphLabels = List.filled(kWeeklyMoodDays, '');
+            graphCats = List.filled(kWeeklyMoodDays, 'neutral');
           }
 
           return Column(
@@ -1179,83 +1332,106 @@ class _WeeklyMoodCardDynamic extends StatelessWidget {
                       color: const Color(0xFFF3F1FB),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+                    child: Text(
+                      '7 Days',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF6F39E8),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    height: 140,
+                    width: 48,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: const [
+                        Text(
+                          'Happy',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF37B48A),
+                            height: 1.1,
+                          ),
+                        ),
+                        Text(
+                          'Neutral',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF9B8EC4),
+                            height: 1.1,
+                          ),
+                        ),
+                        Text(
+                          'Unhappy',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF5B7FD6),
+                            height: 1.1,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: Column(
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Text(
-                            '7 Days',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                              color: Color(0xFF6F39E8),
+                        SizedBox(
+                          height: 140,
+                          width: double.infinity,
+                          child: CustomPaint(
+                            painter: _MoodGraphPainterLive(
+                              scores: graphScores,
+                              labels: graphLabels,
+                              categories: graphCats,
                             ),
                           ),
                         ),
-                        const SizedBox(width: 4),
-                        const Text(
-                          '30 Days',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF8A8D99),
-                          ),
-                        ),
+                        const SizedBox(height: 6),
+                        _buildDayLabels(weekDays),
                       ],
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 12),
-              SizedBox(
-                height: 132,
-                child: CustomPaint(
-                  painter: _MoodGraphPainterLive(
-                    scores: graphScores,
-                    labels: graphLabels,
-                    categories: graphCats,
-                  ),
-                  size: Size(MediaQuery.of(context).size.width - 60, 132),
-                ),
-              ),
-              const SizedBox(height: 8),
-              _buildWeekLabels(mood.hasSummary ? mood.days : const []),
-              const SizedBox(height: 12),
-              if (mood.entryCount >= 2 && mood.recentEntries.isNotEmpty) ...[
-                ...mood.recentEntries.take(4).map(_recentMoodTile),
+              if (mood.entryCount >= 1 && mood.recentEntries.isNotEmpty) ...[
+                ...mood.recentEntries.take(6).map(_recentMoodTile),
                 const SizedBox(height: 10),
               ],
               Row(
                 children: [
                   Icon(
-                    mood.hasSummary
+                    mood.hasGraphData
                         ? Icons.trending_up_rounded
                         : Icons.hourglass_empty_rounded,
                     size: 14,
-                    color: mood.hasSummary
+                    color: mood.hasGraphData
                         ? const Color(0xFF15803D)
                         : const Color(0xFF8A8D99),
                   ),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      mood.hasSummary
-                          ? (mood.dominantMood.isNotEmpty
-                              ? 'Trending ${mood.dominantMood} this week'
-                              : 'Weekly mood summary ready')
-                          : 'Not enough data yet — ${mood.entryCount} of 2 entries',
+                      mood.latestMood.isNotEmpty
+                          ? 'Latest: ${mood.latestMood}${mood.hasSummary ? ' · week trend' : ''}'
+                          : mood.hasGraphData
+                              ? 'Mood captured · building 7-day trend'
+                              : (mood.placeholder ?? 'Unlock to capture mood'),
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w800,
-                        color: mood.hasSummary
+                        color: mood.hasGraphData
                             ? const Color(0xFF15803D)
                             : const Color(0xFF8A8D99),
                       ),
@@ -1361,8 +1537,11 @@ class _MoodGraphPainterLive extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    const topPad = 14.0;
-    const bottomPad = 28.0;
+    const topPad = 10.0;
+    const bottomPad = 8.0;
+    const leftPad = 6.0;
+    const rightPad = 8.0;
+    final plotW = size.width - leftPad - rightPad;
     final plotH = size.height - topPad - bottomPad;
 
     canvas.drawRRect(
@@ -1376,10 +1555,23 @@ class _MoodGraphPainterLive extends CustomPainter {
     final guidePaint = Paint()
       ..color = const Color(0xFFE0DCE8)
       ..strokeWidth = 0.8;
-    for (var i = 0; i <= 3; i++) {
-      final y = topPad + plotH * (i / 3);
-      canvas.drawLine(Offset(8, y), Offset(size.width - 8, y), guidePaint);
+    for (var i = 0; i <= 2; i++) {
+      final y = topPad + plotH * (i / 2);
+      canvas.drawLine(
+        Offset(leftPad, y),
+        Offset(size.width - rightPad, y),
+        guidePaint,
+      );
     }
+
+    final axisPaint = Paint()
+      ..color = const Color(0xFFD8D3E6)
+      ..strokeWidth = 1.2;
+    canvas.drawLine(
+      Offset(leftPad, topPad),
+      Offset(leftPad, topPad + plotH),
+      axisPaint,
+    );
 
     final n = scores.length;
     final pts = <Offset>[];
@@ -1388,7 +1580,9 @@ class _MoodGraphPainterLive extends CustomPainter {
     for (var i = 0; i < n; i++) {
       final hasLabel = i < labels.length && labels[i].isNotEmpty;
       final v = hasLabel ? scores[i].clamp(0.0, 1.0) : 0.5;
-      final x = n <= 1 ? size.width / 2 : 12 + (size.width - 24) * i / (n - 1);
+      final x = n <= 1
+          ? leftPad + plotW / 2
+          : leftPad + plotW * i / (n - 1);
       final y = topPad + plotH * (1.0 - v);
       pts.add(Offset(x, y));
       final cat = i < categories.length ? categories[i] : 'neutral';
@@ -1429,41 +1623,7 @@ class _MoodGraphPainterLive extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2,
       );
-      if (i < labels.length && labels[i].isNotEmpty) {
-        final tp = TextPainter(
-          text: TextSpan(
-            text: labels[i],
-            style: TextStyle(
-              color: c,
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout(maxWidth: 44);
-        tp.paint(canvas, Offset(pts[i].dx - tp.width / 2, topPad + plotH + 4));
-      }
     }
-
-    void drawSideLabel(String text, double y, Color color) {
-      final tp = TextPainter(
-        text: TextSpan(
-          text: text,
-          style: TextStyle(
-            color: color.withValues(alpha: 0.7),
-            fontSize: 8,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tp.paint(canvas, Offset(2, y - tp.height / 2));
-    }
-
-    drawSideLabel('Optimistic', topPad, const Color(0xFF37B48A));
-    drawSideLabel('Balanced', topPad + plotH / 3, const Color(0xFF9B8EC4));
-    drawSideLabel('Restless', topPad + (plotH * 2) / 3, const Color(0xFFE09100));
-    drawSideLabel('Melancholy', topPad + plotH, const Color(0xFF5B7FD6));
   }
 
   @override

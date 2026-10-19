@@ -101,6 +101,34 @@ def notify_password_changed(user) -> bool:
     )
 
 
+def notify_parent_bedtime(user) -> bool:
+    day = timezone.localdate().isoformat()
+    return _create_if_new(
+        user,
+        event_type=UserNotification.EVENT_PARENT_BEDTIME,
+        title='Sleep time',
+        body='Good Night your sleeping time has arrived, so please go to sleep.',
+        dedupe_key=f'parent_bedtime:{day}',
+        action_route='parent',
+        action_label='Parent control',
+        priority=4,
+    )
+
+
+def notify_parent_wakeup(user) -> bool:
+    day = timezone.localdate().isoformat()
+    return _create_if_new(
+        user,
+        event_type=UserNotification.EVENT_PARENT_WAKEUP,
+        title='Good morning',
+        body='Good morning! Time to start your day.',
+        dedupe_key=f'parent_wakeup:{day}',
+        action_route='parent',
+        action_label='Parent control',
+        priority=4,
+    )
+
+
 def notify_low_wellbeing(user, score: int) -> bool:
     day = timezone.localdate().isoformat()
     return _create_if_new(

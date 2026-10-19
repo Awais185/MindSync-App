@@ -96,9 +96,16 @@ def _run_facial_expression_tick() -> None:
         tables = set(connection.introspection.table_names())
     except Exception:
         return
-    if 'face_detection_facialexpressioncapture' not in tables:
+    from face_detection.models import FacialExpressionCapture
+
+    if FacialExpressionCapture._meta.db_table not in tables:
         return
-    from face_detection.facial_expression_service import process_random_incomplete_batch
+    from face_detection.facial_expression_service import (
+        process_random_incomplete_batch,
+        reset_stale_processing_captures,
+    )
+
+    reset_stale_processing_captures()
 
     limit = max(1, int(os.environ.get('MINDSYNC_FACE_BATCH_LIMIT', '10')))
     process_random_incomplete_batch(limit=limit, random_order=False)

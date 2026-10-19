@@ -58,6 +58,7 @@ class MentalHealthScores {
     required this.depression,
     required this.overall,
     this.lastUpdated,
+    this.openfaceCaptureCount = 0,
   });
 
   static const minExpressionsRequiredDefault = 5;
@@ -70,6 +71,7 @@ class MentalHealthScores {
   final MentalHealthEmotionScore depression;
   final MentalHealthOverall overall;
   final String? lastUpdated;
+  final int openfaceCaptureCount;
 
   bool get hasMinimumExpressions =>
       expressionCount >= minExpressionsRequired;
@@ -105,12 +107,50 @@ class MentalHealthScores {
         j['overall'] as Map<String, dynamic>?,
       ),
       lastUpdated: j['last_updated']?.toString(),
+      openfaceCaptureCount:
+          (j['openface_capture_count'] as num?)?.toInt() ?? 0,
     );
   }
 }
 
+/// Home hero + mental health card use a shorter rolling window than reports.
+const int kHomeWellnessWindowDays = 3;
+
+/// Report + Mind Balance Index use the same 7-day wellbeing score.
+const int kReportWellnessWindowDays = 7;
+
+class EmotionalResilienceDay {
+  const EmotionalResilienceDay({
+    required this.date,
+    required this.dayName,
+    required this.emotionLabel,
+    required this.resilienceFill,
+    required this.samples,
+    required this.tone,
+  });
+
+  final String date;
+  final String dayName;
+  final String emotionLabel;
+  final double resilienceFill;
+  final int samples;
+  final String tone;
+
+  factory EmotionalResilienceDay.fromJson(Map<String, dynamic> j) =>
+      EmotionalResilienceDay(
+        date: (j['date'] ?? '').toString(),
+        dayName: (j['day_name'] ?? '').toString(),
+        emotionLabel: (j['emotion_label'] ?? '').toString(),
+        resilienceFill: (j['resilience_fill'] as num?)?.toDouble() ?? 0,
+        samples: (j['samples'] as num?)?.toInt() ?? 0,
+        tone: (j['tone'] ?? 'neutral').toString(),
+      );
+}
+
 class WellnessDashboardData {
   const WellnessDashboardData({
+    required this.windowDays,
+    required this.hasWellbeingSignal,
     required this.wellbeingScore,
     required this.mentalHealthScore,
     required this.stressIndicator,
@@ -125,8 +165,13 @@ class WellnessDashboardData {
     required this.mentalHealth,
     required this.sleepSecondsToday,
     required this.lateNightSecondsToday,
+    required this.emotionalResilienceDays,
+    required this.openfaceCaptureCount,
+    required this.latestEmotion,
   });
 
+  final int windowDays;
+  final bool hasWellbeingSignal;
   final int wellbeingScore;
   final int mentalHealthScore;
   final int stressIndicator;
@@ -141,8 +186,13 @@ class WellnessDashboardData {
   final MentalHealthScores mentalHealth;
   final int sleepSecondsToday;
   final int lateNightSecondsToday;
+  final List<EmotionalResilienceDay> emotionalResilienceDays;
+  final int openfaceCaptureCount;
+  final String latestEmotion;
 
   static const empty = WellnessDashboardData(
+    windowDays: 7,
+    hasWellbeingSignal: false,
     wellbeingScore: 0,
     mentalHealthScore: 0,
     stressIndicator: 0,
@@ -157,6 +207,9 @@ class WellnessDashboardData {
     mentalHealth: MentalHealthScores.empty,
     sleepSecondsToday: 0,
     lateNightSecondsToday: 0,
+    emotionalResilienceDays: [],
+    openfaceCaptureCount: 0,
+    latestEmotion: '',
   );
 
   factory WellnessDashboardData.fromJson(Map<String, dynamic> j) {
@@ -169,8 +222,23 @@ class WellnessDashboardData {
     final mh = MentalHealthScores.fromJson(
       j['mental_health'] as Map<String, dynamic>?,
     );
+    final resilience = ((j['emotional_resilience_days'] as List<dynamic>?) ??
+            const [])
+        .whereType<Map<String, dynamic>>()
+        .map(EmotionalResilienceDay.fromJson)
+        .toList();
+    final openfaceCount = (j['openface_capture_count'] as num?)?.toInt() ??
+        mh.openfaceCaptureCount;
+    final wellbeingScore = (j['wellbeing_score'] as num?)?.toInt() ?? 0;
+    final totalChunks = (j['total_chunks'] as num?)?.toInt() ?? 0;
+    final hasSignal = j['has_wellbeing_signal'] == true ||
+        wellbeingScore > 0 ||
+        mh.hasData ||
+        totalChunks > 0;
     return WellnessDashboardData(
-      wellbeingScore: (j['wellbeing_score'] as num?)?.toInt() ?? 0,
+      windowDays: (j['window_days'] as num?)?.toInt() ?? 7,
+      hasWellbeingSignal: hasSignal,
+      wellbeingScore: wellbeingScore,
       mentalHealthScore: (j['mental_health_score'] as num?)?.toInt() ?? 0,
       stressIndicator: (j['stress_indicator'] as num?)?.toInt() ?? 0,
       anxietyIndicator: (j['anxiety_indicator'] as num?)?.toInt() ?? 0,
@@ -178,13 +246,16 @@ class WellnessDashboardData {
       dominantMoodWeek: (j['dominant_mood_week'] ?? 'neutral').toString(),
       moodLast7: mood,
       contentBuckets: buckets,
-      totalChunks: (j['total_chunks'] as num?)?.toInt() ?? 0,
+      totalChunks: totalChunks,
       screenMinutesWeek: (j['screen_minutes_week'] as num?)?.toInt() ?? 0,
       facetSummary: (j['facet_summary'] ?? '').toString(),
       mentalHealth: mh,
       sleepSecondsToday: (j['sleep_seconds_today'] as num?)?.toInt() ?? 0,
       lateNightSecondsToday:
           (j['late_night_seconds_today'] as num?)?.toInt() ?? 0,
+      emotionalResilienceDays: resilience,
+      openfaceCaptureCount: openfaceCount,
+      latestEmotion: (j['latest_emotion'] ?? '').toString().trim(),
     );
   }
 }
@@ -197,15 +268,24 @@ class WellnessDashboardService {
   final ValueNotifier<WellnessDashboardData> dashboard =
       ValueNotifier<WellnessDashboardData>(WellnessDashboardData.empty);
 
+  /// Last [kHomeWellnessWindowDays] rolling averages for Home UI.
+  final ValueNotifier<WellnessDashboardData> homeDashboard =
+      ValueNotifier<WellnessDashboardData>(WellnessDashboardData.empty);
+
   DateTime? _lastFetch;
+  DateTime? _lastHomeFetch;
   bool _inFlight = false;
+  bool _homeInFlight = false;
   String? _scopedUserId;
 
   void resetForNewUser() {
     _lastFetch = null;
+    _lastHomeFetch = null;
     _scopedUserId = null;
     _inFlight = false;
+    _homeInFlight = false;
     dashboard.value = WellnessDashboardData.empty;
+    homeDashboard.value = WellnessDashboardData.empty;
   }
 
   Future<String?> _userId() async {
@@ -237,8 +317,26 @@ class WellnessDashboardService {
     await prefs.setInt(_wellbeingScoreKey, score);
   }
 
-  Future<void> refresh({bool force = false, int days = 7}) async {
-    if (_inFlight) return;
+  Future<void> refreshHome({bool force = false}) async {
+    await _fetchWindow(days: kHomeWellnessWindowDays, force: force, forHome: true);
+    if (force) {
+      await _fetchWindow(days: kReportWellnessWindowDays, force: true, forHome: false);
+    }
+  }
+
+  Future<void> refresh({bool force = false, int days = 7}) =>
+      _fetchWindow(days: days, force: force, forHome: false);
+
+  Future<void> _fetchWindow({
+    required int days,
+    required bool force,
+    required bool forHome,
+  }) async {
+    if (forHome) {
+      if (_homeInFlight) return;
+    } else if (_inFlight) {
+      return;
+    }
     final uid = await _userId();
     if (uid == null) {
       resetForNewUser();
@@ -250,9 +348,10 @@ class WellnessDashboardService {
     _scopedUserId = uid;
 
     final now = DateTime.now();
+    final last = forHome ? _lastHomeFetch : _lastFetch;
     if (!force &&
-        _lastFetch != null &&
-        now.difference(_lastFetch!) < const Duration(minutes: 5)) {
+        last != null &&
+        now.difference(last) < const Duration(minutes: 5)) {
       return;
     }
     final prefs = await SharedPreferences.getInstance();
@@ -261,7 +360,11 @@ class WellnessDashboardService {
       resetForNewUser();
       return;
     }
-    _inFlight = true;
+    if (forHome) {
+      _homeInFlight = true;
+    } else {
+      _inFlight = true;
+    }
     try {
       final decoded = await getJsonWithRetry(
         Uri.parse('${ApiConfig.baseUrl}/api/auth/dashboard/wellness/?days=$days'),
@@ -270,16 +373,31 @@ class WellnessDashboardService {
           'Content-Type': 'application/json',
         },
       );
-      _lastFetch = DateTime.now();
+      if (forHome) {
+        _lastHomeFetch = DateTime.now();
+      } else {
+        _lastFetch = DateTime.now();
+      }
       if (decoded != null) {
         final next = WellnessDashboardData.fromJson(decoded);
-        dashboard.value = next;
-        await _persistWellbeingDelta(next.wellbeingScore);
+        if (forHome) {
+          homeDashboard.value = next;
+          final reportScore = dashboard.value.wellbeingScore > 0
+              ? dashboard.value.wellbeingScore
+              : next.wellbeingScore;
+          await _persistWellbeingDelta(reportScore);
+        } else {
+          dashboard.value = next;
+        }
       }
     } catch (_) {
       // keep last good payload
     } finally {
-      _inFlight = false;
+      if (forHome) {
+        _homeInFlight = false;
+      } else {
+        _inFlight = false;
+      }
     }
   }
 }

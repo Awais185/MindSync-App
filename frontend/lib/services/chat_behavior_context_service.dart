@@ -10,7 +10,7 @@ class ChatBehaviorContextService {
   /// Refreshes wellness cache when stale, then returns a structured payload.
   Future<Map<String, dynamic>> buildPayload({bool forceRefresh = true}) async {
     if (forceRefresh) {
-      await WellnessDashboardService.instance.refresh(force: true);
+      await WellnessDashboardService.instance.refreshHome(force: true);
     }
 
     final screen = ScreenTimeService.instance.snapshot.value;

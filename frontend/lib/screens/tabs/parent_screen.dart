@@ -9,6 +9,8 @@ import '../../services/plan_access_service.dart';
 import '../../services/feature_permission_service.dart';
 import '../../services/screen_time_service.dart';
 import '../../services/social_media_usage_limit_store.dart';
+import '../../services/parent_bedtime_schedule_service.dart';
+import '../../services/notification_service.dart';
 import '../../utils/social_app_branding.dart';
 
 class ParentScreen extends StatefulWidget {
@@ -93,7 +95,19 @@ class _ParentScreenState extends State<ParentScreen>
     _loadUser();
     _loadParentRules();
     _loadContentMonitor();
+    await _loadBedtimeSchedule();
     await _loadDnsFilterState();
+  }
+
+  Future<void> _loadBedtimeSchedule() async {
+    final times = await ParentBedtimeScheduleService.loadTimes();
+    if (!mounted) return;
+    setState(() {
+      _sleepHour = times.sleep;
+      _wakeUp = times.wake;
+    });
+    await ParentBedtimeScheduleService.restoreNativeScheduleIfSaved();
+    unawaited(NotificationService.instance.refresh(force: true));
   }
 
   Future<void> _loadDnsFilterState() async {
@@ -296,12 +310,7 @@ class _ParentScreenState extends State<ParentScreen>
       _rules = _rules
           .map(
             (r) => aliases.contains(r.packageName)
-                ? ParentalAppRule(
-                    packageName: r.packageName,
-                    appLabel: r.appLabel,
-                    blocked: blocked,
-                    category: r.category,
-                  )
+                ? r.copyWith(blocked: blocked, appLabel: appLabel)
                 : r,
           )
           .toList();
@@ -310,6 +319,7 @@ class _ParentScreenState extends State<ParentScreen>
     final ok = await _parentService.setBlocked(
       packageName: packageName,
       blocked: blocked,
+      appLabel: appLabel,
     );
     if (!ok) {
       if (!mounted) return;
@@ -319,7 +329,14 @@ class _ParentScreenState extends State<ParentScreen>
       );
       return;
     }
-    await _loadParentRules();
+    final labelSnapshot = {
+      for (final r in _rules) r.packageName: r.appLabel,
+    };
+    final rules = await _parentService.fetchRules(
+      preserveLabelsByPackage: labelSnapshot,
+    );
+    if (!mounted) return;
+    setState(() => _rules = rules);
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -428,6 +445,19 @@ class _ParentScreenState extends State<ParentScreen>
       _sleepHour = sleep;
       _wakeUp = wake;
     });
+    await ParentBedtimeScheduleService.saveAndSchedule(
+      sleep: sleep,
+      wake: wake,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Bedtime and wake-up reminders scheduled for every day.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override
@@ -658,6 +688,20 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
         .fold<int>(0, (sum, app) => sum + app.durationSeconds);
   }
 
+  Future<void> _resetUsageHealthLimit() async {
+    await SocialMediaUsageLimitStore.clearLimit();
+    await SocialMediaUsageLimitStore.clearExpiredIndicator();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Usage limit cleared. Social apps are unrestricted again.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   Future<void> _pickAndSaveLimit(int? currentLimitMinutes) async {
     var hours = (currentLimitMinutes ?? 120) ~/ 60;
     var minutes = (currentLimitMinutes ?? 120) % 60;
@@ -863,7 +907,7 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
 
     if (result == null || !mounted) return;
     if (result == 0) {
-      await SocialMediaUsageLimitStore.clearLimit();
+      await _resetUsageHealthLimit();
       return;
     }
     await SocialMediaUsageLimitStore.saveLimit(limitMinutes: result);
@@ -1047,6 +1091,27 @@ class _UsageHealthCardState extends State<_UsageHealthCard> {
                       ),
                     ),
                   ),
+                  if (hasLimit) ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 44,
+                      child: OutlinedButton(
+                        onPressed: _resetUsageHealthLimit,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF6F39E8),
+                          side: const BorderSide(color: Color(0xFFD6CCF4)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                        ),
+                        child: const Text(
+                          'Reset',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             );
@@ -1468,7 +1533,7 @@ class _AppRestrictionsCardState extends State<_AppRestrictionsCard> {
               ),
               Spacer(),
               Text(
-                'Block · Unblock',
+                'Restrict · Allow',
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w800,
@@ -1479,7 +1544,7 @@ class _AppRestrictionsCardState extends State<_AppRestrictionsCard> {
           ),
           const SizedBox(height: 4),
           const Text(
-            'Blocked apps stay blocked until you turn them off',
+            'Toggle ON to restrict one app. Default is OFF (allowed).',
             style: TextStyle(
               fontSize: 12,
               color: Color(0xFFA1A1AA),
@@ -1518,8 +1583,8 @@ class _AppRestrictionsCardState extends State<_AppRestrictionsCard> {
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _AppRestrictionRow(
                   rule: rule,
-                  onChanged: (val) =>
-                      widget.onRuleChanged(rule.packageName, val),
+                  onChanged: (blocked) =>
+                      widget.onRuleChanged(rule.packageName, blocked),
                 ),
               ),
             ],
@@ -1877,17 +1942,6 @@ class _AppRestrictionRow extends StatelessWidget {
                     color: Color(0xFF18181B),
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  blocked ? 'Blocked' : 'Unblocked',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: blocked
-                        ? const Color(0xFFDC2626)
-                        : const Color(0xFF16A34A),
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
               ],
             ),
           ),
@@ -1895,7 +1949,8 @@ class _AppRestrictionRow extends StatelessWidget {
             value: blocked,
             onChanged: onChanged,
             activeColor: Colors.white,
-            activeTrackColor: const Color(0xFF6F39E8),
+            activeTrackColor: const Color(0xFFDC2626),
+            inactiveTrackColor: const Color(0xFFE4E4E7),
           ),
         ],
       ),

@@ -66,8 +66,10 @@ def _apply_face_mood_to_dashboard(payload: dict, user, days: int) -> dict:
         from users.services.mood_weekly_service import build_weekly_mood_payload
 
         mood_payload = build_weekly_mood_payload(user, request=None)
-        if mood_payload.get('has_summary'):
-            payload['dominant_mood_week'] = str(mood_payload.get('dominant_mood') or payload.get('dominant_mood_week'))
+        if mood_payload.get('has_graph_data') or mood_payload.get('entry_count', 0) > 0:
+            latest = str(mood_payload.get('latest_mood') or '').strip()
+            dom = str(mood_payload.get('dominant_mood') or '').strip()
+            payload['dominant_mood_week'] = (latest or dom or payload.get('dominant_mood_week') or 'neutral').lower()
             payload['mood_weekly_live'] = mood_payload
         days_list = mood_payload.get('days') or []
         if days_list:
@@ -104,7 +106,7 @@ def build_wellness_dashboard(user, days: int = 7) -> dict:
     from users.mental_health_scoring import compute_mental_health_scores
     from users.models import VideoChunkAnalysis
 
-    mental_health = compute_mental_health_scores(user)
+    mental_health = compute_mental_health_scores(user, window_days=days)
 
     end = timezone.now()
     start = end - timedelta(days=days)
@@ -121,11 +123,15 @@ def build_wellness_dashboard(user, days: int = 7) -> dict:
         d = (timezone.localdate() - timedelta(days=i)).isoformat()
         mood_last_7.append({"date": d, "dominant_mood": "neutral", "samples": 0})
 
+    def _has_wellbeing_signal(score: int, mh: dict, chunks: int) -> bool:
+        return chunks > 0 or bool(mh.get("has_data")) or score > 0
+
     if n_chunks == 0:
         if not mental_health.get("has_data"):
             return _apply_face_mood_to_dashboard(
                 {
                     "window_days": days,
+                    "has_wellbeing_signal": False,
                     "wellbeing_score": 0,
                     "mental_health_score": 0,
                     "stress_indicator": 0,
@@ -143,13 +149,15 @@ def build_wellness_dashboard(user, days: int = 7) -> dict:
                 days,
             )
         overall = float(mental_health["overall"]["score"])
+        wb = int(round(max(0, 100 - overall)))
         return _apply_face_mood_to_dashboard(
             {
                 "window_days": days,
-                "wellbeing_score": int(round(max(0, 100 - overall))),
+                "has_wellbeing_signal": _has_wellbeing_signal(wb, mental_health, 0),
+                "wellbeing_score": wb,
                 "mental_health_score": int(round(overall)),
                 "stress_indicator": int(round(mental_health["stress"]["score"])),
-                "anxiety_indicator": int(round(mental_health["anxiety"]["score"])),
+                "anxiety_indicator": 0,
                 "depression_indicator": int(round(mental_health["depression"]["score"])),
                 "dominant_mood_week": "neutral",
                 "mood_last_7": mood_last_7,
@@ -192,6 +200,14 @@ def build_wellness_dashboard(user, days: int = 7) -> dict:
     wellbeing_score = int(round(raw_score * 100))
     mental_health_score = int(round(max(0, 100 - avg_mh * 0.7 - avg_risk * 0.3)))
 
+    if mental_health.get("has_data"):
+        mh_wellbeing = int(round(max(0, 100 - float(mental_health["overall"]["score"]))))
+        wellbeing_score = (
+            mh_wellbeing
+            if n_chunks == 0
+            else int(round((wellbeing_score + mh_wellbeing) / 2))
+        )
+
     bc = _bucket_counts(chunks)
     total_buckets = sum(bc.values()) or 1
 
@@ -205,7 +221,7 @@ def build_wellness_dashboard(user, days: int = 7) -> dict:
 
     if mental_health.get("has_data"):
         stress_i = int(round(mental_health["stress"]["score"]))
-        anx_i = int(round(mental_health["anxiety"]["score"]))
+        anx_i = 0
         dep_i = int(round(mental_health["depression"]["score"]))
     else:
         stress_i = 0
@@ -229,13 +245,15 @@ def build_wellness_dashboard(user, days: int = 7) -> dict:
     if mental_health.get("has_data"):
         mh_summary = (
             f" Stress {mental_health['stress']['score']},"
-            f" anxiety {mental_health['anxiety']['score']},"
             f" depression {mental_health['depression']['score']}."
         )
 
     return _apply_face_mood_to_dashboard(
         {
             "window_days": days,
+            "has_wellbeing_signal": _has_wellbeing_signal(
+                wellbeing_score, mental_health, n_chunks
+            ),
             "wellbeing_score": wellbeing_score,
             "mental_health_score": mental_health_score,
             "stress_indicator": stress_i,

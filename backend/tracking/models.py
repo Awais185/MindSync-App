@@ -37,8 +37,8 @@ class ScreenTimeSession(models.Model):
     date = models.DateField(db_index=True)
     total_ms = models.PositiveBigIntegerField(default=0)
     mood = models.CharField(max_length=64, blank=True, default="")
+    emotion = models.CharField(max_length=64, blank=True, default="")
     stress_score = models.PositiveSmallIntegerField(default=0)
-    anxiety_score = models.PositiveSmallIntegerField(default=0)
     depression_score = models.PositiveSmallIntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 

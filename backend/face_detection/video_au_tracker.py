@@ -11,12 +11,13 @@ import logging
 import os
 import tempfile
 import uuid
+from collections import Counter
 from typing import Any
 
 import cv2
 import numpy as np
 
-from .au_emotion_pipeline import STATE_AUS, analyze_frame, compute_scores, normalize_aus
+from .au_emotion_pipeline import STATE_AUS
 from .emotion_models import predict_image_pil
 from .face_mesh_au import (
     close_face_mesh,
@@ -58,6 +59,48 @@ def emotion_to_au_intensities(label: str, confidence: float) -> dict[str, float]
     profile = _EMOTION_AU_PROFILES.get(key) or _EMOTION_AU_PROFILES["neutral"]
     conf = max(0.2, min(1.0, float(confidence or 0.5)))
     return {au: float(v) * conf for au, v in profile.items() if v > 0}
+
+
+def _cross_platform_model_scores(
+    emotion_label: str,
+    face_visibility_ratio: float,
+    *,
+    analysis_source: str,
+) -> dict[str, Any]:
+    """Cross-platform path: emotion model only (no heuristic AU stress/anxiety/depression)."""
+    label = (emotion_label or "").strip()
+    dominant = label.lower() if label else "neutral"
+    recs: list[str] = []
+    if label:
+        recs.append(
+            f"Your adult emotion model read «{label}» across sampled frames — use this as the primary signal."
+        )
+        if dominant in {"sad", "sadness", "fear", "fearful", "angry", "anger"}:
+            recs.append("Take a short break, breathe slowly, and check in with how you feel.")
+        elif dominant in {"happy", "happiness", "neutral"}:
+            recs.append("Expressions look steady — keep balanced screen-time breaks through the day.")
+    else:
+        recs.append(
+            "Not enough clear face frames for the emotion model. Retry with front lighting and your face centered."
+        )
+    return {
+        "stress_score": 0,
+        "anxiety_score": 0,
+        "depression_score": 0,
+        "dominant_state": dominant,
+        "dominant_states": [dominant] if dominant != "neutral" else [],
+        "max_score": 0,
+        "active_aus": [],
+        "au_disease_table": dict(STATE_AUS),
+        "matched_aus_by_state": {},
+        "state_probabilities": {},
+        "face_visibility_ratio": float(face_visibility_ratio),
+        "au_summary": [],
+        "recommendations": recs,
+        "behavioral_insights": [],
+        "analysis_source": analysis_source,
+        "emotion_label": label,
+    }
 
 
 def _legacy_scores_from_analyze_frame(
@@ -169,20 +212,14 @@ def _draw_overlay(
             cv2.LINE_AA,
         )
 
-    stress = int(scores.get("stress_score", 0))
-    anx = int(scores.get("anxiety_score", 0))
-    dep = int(scores.get("depression_score", 0))
     dom = str(scores.get("dominant_state", "neutral"))
-    top_aus = sorted(frame_aus.items(), key=lambda kv: kv[1], reverse=True)[:4]
-    au_line = "  ".join(f"{k}:{v:.2f}" for k, v in top_aus) if top_aus else "—"
     lines = [
-        f"Stress {stress}%   Anxiety {anx}%   Depression {dep}%",
-        f"Dominant: {dom}   Emotion: {emotion_label or '—'}",
-        f"Active AUs: {au_line}",
+        f"Emotion model: {emotion_label or dom or '—'}",
+        "MindSync · tracked preview (scores from models in app summary)",
         (
-            "MediaPipe face mesh + AU geometry (stress/anxiety/depression from STATE_AUS)"
+            "MediaPipe face mesh overlay"
             if mesh_mode
-            else "Emotion model AU inference (install mediapipe for mesh landmarks)"
+            else "Face tracking overlay"
         ),
     ]
     pad = 8
@@ -230,7 +267,7 @@ def run_cross_platform_video_analysis(
         max_decode_frames = 10_000
     video_stride = 2 if budget_mode else 1
 
-    au_frame_samples: list[dict[str, float]] = []
+    emotion_votes: Counter[str] = Counter()
     peak_candidates: list[tuple[float, float]] = []
     writer: cv2.VideoWriter | None = None
     raw_out = ""
@@ -287,27 +324,21 @@ def run_cross_platform_video_analysis(
 
             if run_model:
                 rect_for_model = last_face_rect
-                emotion_aus: dict[str, float] = {}
                 preds = _predict_emotion_on_face(bgr, rect_for_model)
                 if preds:
                     top = preds[0]
                     last_emotion_label = str(top["label"])
-                    emotion_aus = emotion_to_au_intensities(
-                        last_emotion_label, float(top["score"])
-                    )
+                    conf = float(top.get("score") or 0.5)
+                    if last_emotion_label:
+                        emotion_votes[last_emotion_label] += max(conf, 0.1)
+                    peak_candidates.append((time_sec, conf))
 
-                last_frame_aus = merge_au_dicts(emotion_aus, mesh_aus)
-                if last_frame_aus:
-                    au_frame_samples.append(dict(last_frame_aus))
-                    instant = normalize_aus(last_frame_aus)
-                    probs = compute_scores(instant)
-                    peak_candidates.append(
-                        (time_sec, sum(float(probs.get(k) or 0) for k in probs))
-                    )
-                    last_display_scores = _legacy_scores_from_analyze_frame(
-                        analyze_frame(last_frame_aus, quiet=True),
-                        analysis_source=source_tag,
-                    )
+                last_frame_aus = merge_au_dicts({}, mesh_aus)
+                last_display_scores = _cross_platform_model_scores(
+                    last_emotion_label,
+                    float(mesh_frames) / float(max(frame_idx, 1)),
+                    analysis_source=source_tag,
+                )
 
             if will_write:
                 if writer is None:
@@ -352,21 +383,24 @@ def run_cross_platform_video_analysis(
         if use_mesh:
             close_face_mesh()
 
-    aggregated_aus: dict[str, float] = {}
-    if au_frame_samples:
-        all_keys = {k for sample in au_frame_samples for k in sample}
-        n = float(len(au_frame_samples))
-        aggregated_aus = {
-            au: sum(s.get(au, 0.0) for s in au_frame_samples) / n for au in all_keys
-        }
+    dominant_emotion = ""
+    if emotion_votes:
+        dominant_emotion = emotion_votes.most_common(1)[0][0]
+    elif last_emotion_label:
+        dominant_emotion = last_emotion_label
 
-    if not aggregated_aus:
-        logger.warning("AU video tracker: no emotion/AU signal in clip")
-        frame = analyze_frame({}, quiet=True)
-    else:
-        frame = analyze_frame(aggregated_aus, quiet=False)
+    visibility = float(mesh_frames) / float(max(frame_idx, 1)) if frame_idx else 0.0
+    if visibility <= 0.0 and emotion_votes:
+        visibility = min(1.0, len(emotion_votes) / 12.0)
 
-    scores = _legacy_scores_from_analyze_frame(frame, analysis_source=source_tag)
+    if not dominant_emotion and frame_idx > 0:
+        logger.warning("AU video tracker: no emotion model signal in clip")
+
+    scores = _cross_platform_model_scores(
+        dominant_emotion,
+        visibility,
+        analysis_source=source_tag,
+    )
     peak_candidates.sort(key=lambda x: x[1], reverse=True)
     peak_timestamps = [t for t, _ in peak_candidates[:3]]
 
@@ -406,14 +440,12 @@ def run_cross_platform_video_analysis(
         )
 
     logger.info(
-        "AU video tracker done frames=%s written=%s mesh_frames=%s aus=%s stress=%s anxiety=%s depression=%s video=%s",
+        "AU video tracker done frames=%s written=%s mesh_frames=%s emotion=%s visibility=%.2f video=%s",
         frame_idx,
         written,
         mesh_frames,
-        len(aggregated_aus),
-        scores.get("stress_score"),
-        scores.get("anxiety_score"),
-        scores.get("depression_score"),
+        dominant_emotion or "—",
+        visibility,
         bool(tracked_bytes),
     )
 

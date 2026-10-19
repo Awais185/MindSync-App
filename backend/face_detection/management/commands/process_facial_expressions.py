@@ -10,17 +10,20 @@ Usage:
 import time
 
 from django.core.management.base import BaseCommand
-from django.db.models import Q
 
 from face_detection.facial_expression_service import (
+    incomplete_facial_expression_queryset,
+    process_all_incomplete_facial_captures,
     process_facial_expression_capture_sync,
     process_random_incomplete_batch,
 )
-from face_detection.models import FacialExpressionCapture
 
 
 class Command(BaseCommand):
-    help = "Run OpenFace on facial expression captures missing AU results."
+    help = (
+        "Run emotion model (+ OpenFace when available) on facial expression "
+        "captures that have video but no results yet."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -68,13 +71,13 @@ class Command(BaseCommand):
             return
 
         if options.get("all"):
-            qs = self._incomplete_queryset().order_by("created_at")
-            total = qs.count()
-            done = 0
-            for row in qs.iterator():
-                if process_facial_expression_capture_sync(row.id):
-                    done += 1
-            self.stdout.write(self.style.SUCCESS(f"Processed {done}/{total} capture(s)."))
+            stats = process_all_incomplete_facial_captures()
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"Processed {stats['processed']}/{stats['total_candidates']} "
+                    f"capture(s); {stats['remaining']} still incomplete."
+                )
+            )
             return
 
         if options.get("continuous"):
@@ -103,9 +106,4 @@ class Command(BaseCommand):
         )
 
     def _incomplete_queryset(self):
-        return FacialExpressionCapture.objects.filter(
-            Q(status=FacialExpressionCapture.STATUS_PENDING)
-            | Q(status=FacialExpressionCapture.STATUS_FAILED)
-            | Q(status=FacialExpressionCapture.STATUS_PROCESSING)
-            | Q(au_results__isnull=True)
-        ).exclude(video="")
+        return incomplete_facial_expression_queryset()

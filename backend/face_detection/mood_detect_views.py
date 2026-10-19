@@ -13,7 +13,7 @@ from .dual_model_service import analyze_manual_image, analyze_manual_video
 class FaceMoodDetectImageView(views.APIView):
     """
     POST /api/face/mood-detect/image/
-    multipart: image — emotion + depression (OpenFace); not persisted.
+    multipart: image — adult emotion ensemble only; not persisted.
     """
 
     permission_classes = (permissions.IsAuthenticated,)
@@ -38,9 +38,8 @@ class FaceMoodDetectImageView(views.APIView):
                 {
                     "mood_saved": False,
                     "mood": dual.get("mood"),
-                    "depression": dual.get("depression"),
                     "identity_check": "manual_ui_not_saved",
-                    "message": "Emotion and depression analysis complete (not saved).",
+                    "message": "Image mood analysis complete (not saved).",
                 },
                 status=status.HTTP_200_OK,
             )
@@ -54,7 +53,7 @@ class FaceMoodDetectImageView(views.APIView):
 class FaceMoodDetectVideoView(views.APIView):
     """
     POST /api/face/mood-detect/video/
-    multipart: video — emotion + depression; not saved.
+    multipart: video — adult emotion ensemble only; not saved.
     """
 
     permission_classes = (permissions.IsAuthenticated,)
@@ -88,9 +87,8 @@ class FaceMoodDetectVideoView(views.APIView):
                 {
                     "mood_saved": False,
                     "mood": dual.get("mood"),
-                    "depression": dual.get("depression"),
                     "identity_check": "skipped_ui_demo",
-                    "message": "Video emotion and depression analysis complete.",
+                    "message": "Video mood analysis complete (not saved).",
                 },
                 status=status.HTTP_200_OK,
             )

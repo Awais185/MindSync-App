@@ -16,6 +16,7 @@ class HomeHeroMetrics {
     required this.sleepCaption,
     required this.habitValue,
     required this.habitCaption,
+    this.topHabitApp,
   });
 
   final int wellbeingScore;
@@ -29,6 +30,7 @@ class HomeHeroMetrics {
   final String sleepCaption;
   final String habitValue;
   final String habitCaption;
+  final AppUsageItem? topHabitApp;
 
   double get wellbeingProgress =>
       (wellbeingScore.clamp(0, 100) / 100.0).clamp(0.0, 1.0);
@@ -41,6 +43,7 @@ class HomeHeroMetrics {
 
   static HomeHeroMetrics compose({
     required WellnessDashboardData wellness,
+    required WellnessDashboardData reportWellness,
     required ScreenTimeSnapshot screen,
     required int yesterdayDaySeconds,
     required int backendSleepSeconds,
@@ -48,7 +51,11 @@ class HomeHeroMetrics {
     required int wellbeingDeltaPoints,
     List<AppUsageItem> rollingApps = const [],
   }) {
-    final score = wellness.wellbeingScore.clamp(0, 100);
+    final score = _resolveWellbeingScore(wellness, reportWellness: reportWellness);
+    final showScore = score > 0 ||
+        wellness.hasWellbeingSignal ||
+        reportWellness.hasWellbeingSignal ||
+        wellness.mentalHealth.hasData;
     final stressScore = wellness.mentalHealth.hasData
         ? wellness.mentalHealth.stress.score
         : wellness.stressIndicator.toDouble();
@@ -73,10 +80,13 @@ class HomeHeroMetrics {
       yesterdaySeconds: yesterdayDaySeconds,
     );
 
-    final topApp = _topUsageApp(screen, rollingApps: rollingApps);
+    final topApp = _topUsageAppToday(screen, rollingApps: rollingApps);
+    final habitDuration = topApp == null
+        ? ''
+        : formatDurationShort(topApp.durationSeconds);
 
     return HomeHeroMetrics(
-      wellbeingScore: score,
+      wellbeingScore: showScore ? score : 0,
       wellbeingDeltaPoints: wellbeingDeltaPoints,
       balanceRingLabel: _balanceRingLabel(score),
       screenTimeValue: screenValue,
@@ -90,31 +100,61 @@ class HomeHeroMetrics {
         sleepSeconds: sleepSeconds,
         lateNightSeconds: lateSeconds,
       ),
-      habitValue: topApp == null ? '—' : _truncate(topApp.appName, 14),
+      habitValue: topApp == null
+          ? '—'
+          : '${_truncate(topApp.appName, 12)} - $habitDuration',
       habitCaption: topApp == null
           ? 'Usage data pending'
-          : 'Top today · ${formatDurationShort(topApp.durationSeconds)}',
+          : 'Highest today · last 24h',
+      topHabitApp: topApp,
     );
   }
 
-  static AppUsageItem? _topUsageApp(
+  /// Device usage stats for today (midnight → now), same source as App Usage card.
+  static AppUsageItem? _topUsageAppToday(
     ScreenTimeSnapshot screen, {
     List<AppUsageItem> rollingApps = const [],
   }) {
-    final merged = <String, AppUsageItem>{};
-    for (final a in screen.topApps) {
-      merged[a.packageName] = a;
-    }
-    for (final a in rollingApps) {
-      final prev = merged[a.packageName];
-      if (prev == null || a.sortKeyMs > prev.sortKeyMs) {
-        merged[a.packageName] = a;
-      }
-    }
-    if (merged.isEmpty) return null;
-    final ranked = merged.values.toList()
-      ..sort((a, b) => b.sortKeyMs.compareTo(a.sortKeyMs));
+    final useNativeToday =
+        screen.nativeTrackerConfigured && screen.topApps.isNotEmpty;
+    final useRolling =
+        !useNativeToday && screen.usageStatsGranted && rollingApps.isNotEmpty;
+    final ranked = List<AppUsageItem>.from(
+      useNativeToday
+          ? screen.topApps
+          : (useRolling ? rollingApps : screen.topApps),
+    )..sort((a, b) => b.sortKeyMs.compareTo(a.sortKeyMs));
+
+    if (ranked.isEmpty) return null;
     return ranked.first;
+  }
+
+  /// Mind Balance Index = report (7-day) wellbeing score when available.
+  static int resolveMindBalanceWellbeingScore(
+    WellnessDashboardData homeWindow, {
+    WellnessDashboardData reportWindow = WellnessDashboardData.empty,
+  }) =>
+      _resolveWellbeingScore(homeWindow, reportWellness: reportWindow);
+
+  static int _resolveWellbeingScore(
+    WellnessDashboardData wellness, {
+    WellnessDashboardData reportWellness = WellnessDashboardData.empty,
+  }) {
+    final reportWb = reportWellness.wellbeingScore;
+    if (reportWb > 0) return reportWb.clamp(0, 100);
+    final homeWb = wellness.wellbeingScore;
+    if (homeWb > 0) return homeWb.clamp(0, 100);
+    if (wellness.mentalHealth.hasData) {
+      return (100 - wellness.mentalHealth.overall.score)
+          .round()
+          .clamp(0, 100);
+    }
+    if (reportWellness.mentalHealth.hasData) {
+      return (100 - reportWellness.mentalHealth.overall.score)
+          .round()
+          .clamp(0, 100);
+    }
+    return 0;
   }
 
   static String _balanceRingLabel(int score) {
@@ -127,7 +167,7 @@ class HomeHeroMetrics {
     required int todaySeconds,
     required int yesterdaySeconds,
   }) {
-    final thresholdLabel = 'Daily threshold · 5h';
+    const thresholdLabel = 'Daily threshold · 5h';
     if (yesterdaySeconds <= 0) {
       return 'Today · $thresholdLabel';
     }

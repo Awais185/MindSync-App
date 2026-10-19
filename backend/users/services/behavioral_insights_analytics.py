@@ -351,9 +351,11 @@ def build_facial_expression_study(user, start_at, end_at) -> dict[str, Any]:
         if not probs and au:
             probs = {
                 'stress': float(au.get('stress_score') or 0) / 100.0,
-                'anxiety': float(au.get('anxiety_score') or 0) / 100.0,
                 'depression': float(au.get('depression_score') or 0) / 100.0,
             }
+            emo = (getattr(cap, 'emotion', None) or '').strip().lower()
+            if emo in {'happy', 'happiness', 'joy', 'neutral', 'calm'}:
+                probs['neutral'] = max(probs.get('neutral', 0.0), 0.55)
             dom = str(au.get('dominant_state') or '').lower()
             if dom in {'neutral', 'normal', ''}:
                 probs['neutral'] = max(probs.get('neutral', 0.0), 0.55)
@@ -826,6 +828,256 @@ def build_behaviour_insight(user, start_at, end_at, *, window_days: int) -> dict
         'dominant_label': label,
         'count': int(dominant.get('count') or 0),
         'percent': float(dominant.get('percent') or 0.0),
+    }
+
+
+DAY_OUTCOME_SPECS: tuple[tuple[str, str], ...] = (
+    ('stress', 'Stress'),
+    ('emotion', 'Emotion'),
+    ('depression', 'Depression'),
+    ('normal', 'Normal'),
+)
+
+
+def _local_calendar_day_window() -> tuple[Any, Any, date]:
+    """Current local calendar day: midnight → next midnight."""
+    tz = timezone.get_current_timezone()
+    today = timezone.localdate()
+    start_at = timezone.make_aware(datetime.combine(today, time.min), tz)
+    end_at = start_at + timedelta(days=1)
+    return start_at, end_at, today
+
+
+def _map_chunk_slug_to_day_outcome(slug: str | None) -> str | None:
+    if not slug:
+        return None
+    if slug == 'anxiety':
+        return 'emotion'
+    if slug == 'suicidal_thoughts':
+        return 'depression'
+    if slug in {'stress', 'depression'}:
+        return slug
+    return None
+
+
+def _outcome_from_facial_capture(cap) -> tuple[str, str]:
+    """Classify one 30s scan into stress / emotion / depression / normal + display label."""
+    stress = int(cap.stress_score or 0)
+    dep = int(cap.depression_score or 0)
+    emo = (getattr(cap, 'emotion', None) or '').strip()
+    emo_lower = emo.lower()
+    if stress >= 55 and stress >= dep:
+        return 'stress', emo or 'Stress'
+    if dep >= 55:
+        return 'depression', emo or 'Depression'
+    if emo and emo_lower not in {'neutral', 'normal', 'unknown', ''}:
+        return 'emotion', emo
+    if emo_lower in {'neutral', 'normal'}:
+        return 'normal', emo or 'Normal'
+    dom = (cap.dominant_state or '').strip().lower()
+    if dom in {'stress', 'stressed'}:
+        return 'stress', emo or 'Stress'
+    if dom in {'depression', 'depressed'}:
+        return 'depression', emo or 'Depression'
+    if dom and dom not in {'neutral', 'normal'}:
+        return 'emotion', emo or cap.dominant_state.title()
+    return 'normal', emo or 'Normal'
+
+
+def build_behaviour_study_day_detail(user) -> dict[str, Any]:
+    """
+    Single local calendar day (12:00 AM – 11:59 PM) behaviour + 30s facial scan breakdown.
+    """
+    from face_detection.models import FacialExpressionCapture
+
+    start_at, end_at, day = _local_calendar_day_window()
+    outcome_counts: dict[str, int] = {slug: 0 for slug, _ in DAY_OUTCOME_SPECS}
+
+    captures_qs = (
+        FacialExpressionCapture.objects.filter(
+            user=user,
+            created_at__gte=start_at,
+            created_at__lt=end_at,
+        )
+        .exclude(video='')
+        .order_by('-created_at')
+    )
+    outcome_labels = dict(DAY_OUTCOME_SPECS)
+    facial_scans: list[dict[str, Any]] = []
+    for cap in captures_qs:
+        bucket, label = _outcome_from_facial_capture(cap)
+        outcome_counts[bucket] = outcome_counts.get(bucket, 0) + 1
+        local_dt = timezone.localtime(cap.created_at)
+        emo = (getattr(cap, 'emotion', None) or '').strip()
+        facial_scans.append(
+            {
+                'id': cap.id,
+                'time': local_dt.strftime('%H:%M'),
+                'captured_at': cap.created_at.isoformat(),
+                'outcome': bucket,
+                'outcome_label': outcome_labels.get(bucket, bucket.title()),
+                'emotion': emo if emo else label,
+                'stress_score': int(cap.stress_score or 0),
+                'depression_score': int(cap.depression_score or 0),
+                'status': cap.status,
+                'source_type': cap.source_type,
+                'source_app': cap.source_app_name or '',
+                'source_package': cap.source_package_name or '',
+                'duration_seconds': int(cap.duration_seconds or 0),
+            }
+        )
+
+    chunk_events: list[dict[str, Any]] = []
+    chunk_qs = _video_chunks_in_range(user, start_at, end_at, strict=True).only(
+        'behavior_result',
+        'behavior_results',
+        'classification_outputs',
+        'created_at',
+        'platform',
+        'source_package',
+    )
+    for row in chunk_qs.iterator():
+        slug = _behavior_slug_from_chunk_row(row)
+        outcome = _map_chunk_slug_to_day_outcome(slug)
+        if not outcome:
+            continue
+        outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+        local_dt = timezone.localtime(row.created_at)
+        chunk_events.append(
+            {
+                'time': local_dt.strftime('%H:%M'),
+                'captured_at': row.created_at.isoformat(),
+                'outcome': outcome,
+                'behavior_label': slug.replace('_', ' ').title() if slug else '',
+                'platform': (row.platform or row.source_package or '')[:120],
+            }
+        )
+
+    summary_cards = [
+        {
+            'key': slug,
+            'label': label,
+            'count': int(outcome_counts.get(slug) or 0),
+        }
+        for slug, label in DAY_OUTCOME_SPECS
+    ]
+    facial_total = captures_qs.count()
+    has_data = facial_total > 0 or bool(chunk_events)
+
+    return {
+        'has_data': has_data,
+        'date': day.isoformat(),
+        'window_label': 'Today (12:00 AM – 11:59 PM)',
+        'window_start': start_at.isoformat(),
+        'window_end': end_at.isoformat(),
+        'facial_scan_count': facial_total,
+        'video_chunk_signals': len(chunk_events),
+        'summary': summary_cards,
+        'facial_scans': facial_scans,
+        'video_chunk_events': chunk_events[:80],
+    }
+
+
+CONTENT_TYPE_PLACEHOLDER_CATEGORIES: tuple[str, ...] = (
+    'Gaming',
+    'Educational',
+    'Social Media',
+    'Entertainment',
+    'News & Info',
+    'Health & Wellness',
+)
+
+
+def _analytics_period_window(period: str) -> tuple[Any, Any, str, date, date]:
+    """day = local today; week = last 7 calendar days inclusive."""
+    period = (period or 'week').strip().lower()
+    tz = timezone.get_current_timezone()
+    today = timezone.localdate()
+    if period == 'day':
+        start_at, end_at, _ = _local_calendar_day_window()
+        return start_at, end_at, 'Today (12:00 AM – 11:59 PM)', today, today
+    start_day = today - timedelta(days=6)
+    start_at = timezone.make_aware(datetime.combine(start_day, time.min), tz)
+    end_at = timezone.make_aware(datetime.combine(today + timedelta(days=1), time.min), tz)
+    return start_at, end_at, 'Last 7 days', start_day, today
+
+
+def build_content_type_watch_page(user, *, period: str = 'week') -> dict[str, Any]:
+    """
+    Watched content types from per-user VideoChunkAnalysis (video tracking pipeline).
+    Always returns the standard category rows; zeros when no chunks classified yet.
+    """
+    from users.services.category_session_analytics import session_category_for_chunk
+
+    start_at, end_at, window_label, start_day, end_day = _analytics_period_window(period)
+    counts: Counter[str] = Counter()
+    recent: list[dict[str, Any]] = []
+
+    qs = (
+        _video_chunks_in_range(user, start_at, end_at, strict=True)
+        .only('content_type', 'source_package', 'platform', 'created_at', 'duration_seconds')
+        .order_by('-created_at')
+    )
+    for chunk in qs.iterator(chunk_size=200):
+        cat = session_category_for_chunk(chunk.content_type, chunk.source_package)
+        counts[cat] += 1
+        if len(recent) < 25:
+            ct = chunk.content_type if isinstance(chunk.content_type, dict) else {}
+            summary = ''
+            if isinstance(ct.get('summary'), str):
+                summary = ct['summary'].strip()[:160]
+            recent.append(
+                {
+                    'time': timezone.localtime(chunk.created_at).strftime('%H:%M'),
+                    'date': timezone.localtime(chunk.created_at).date().isoformat(),
+                    'category': cat,
+                    'platform': (chunk.platform or chunk.source_package or '')[:120],
+                    'duration_seconds': int(chunk.duration_seconds or 0),
+                    'summary': summary,
+                }
+            )
+
+    total = sum(counts.values())
+    items: list[dict[str, Any]] = []
+    for label in CONTENT_TYPE_PLACEHOLDER_CATEGORIES:
+        count = int(counts.get(label) or 0)
+        items.append(
+            {
+                'label': label,
+                'count': count,
+                'percent': round((count / total) * 100.0, 1) if total else 0.0,
+                'is_placeholder': total == 0,
+                'has_watch_data': count > 0,
+            }
+        )
+    other_count = int(counts.get('Other') or 0)
+    if other_count > 0:
+        items.append(
+            {
+                'label': 'Other',
+                'count': other_count,
+                'percent': round((other_count / total) * 100.0, 1) if total else 0.0,
+                'is_placeholder': False,
+                'has_watch_data': True,
+            }
+        )
+
+    if total > 0:
+        items.sort(key=lambda x: (-x['percent'], -x['count'], x['label']))
+
+    top = max(items, key=lambda x: x['count']) if total else None
+    return {
+        'has_data': total > 0,
+        'period': period if period == 'day' else 'week',
+        'window_label': window_label,
+        'start_date': start_day.isoformat(),
+        'end_date': end_day.isoformat(),
+        'total_chunks': total,
+        'top_category': top['label'] if top and top['count'] > 0 else None,
+        'top_percent': top['percent'] if top and top['count'] > 0 else 0.0,
+        'items': items,
+        'recent_watches': recent,
+        'source': 'video_chunk_analysis',
     }
 
 

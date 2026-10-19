@@ -11,8 +11,8 @@ def update_daily_session_metrics(
     user,
     *,
     mood_label: str,
+    emotion: str,
     stress: int,
-    anxiety: int,
     depression: int,
 ) -> None:
     from tracking.models import ScreenTimeSession
@@ -24,15 +24,16 @@ def update_daily_session_metrics(
         date=today,
         defaults={"total_ms": 0},
     )
+    emo = (emotion or label or "").strip()[:64]
     session.mood = label
+    session.emotion = emo
     session.stress_score = int(stress)
-    session.anxiety_score = int(anxiety)
     session.depression_score = int(depression)
     session.save(
         update_fields=[
             "mood",
+            "emotion",
             "stress_score",
-            "anxiety_score",
             "depression_score",
             "updated_at",
         ]
@@ -43,18 +44,19 @@ def persist_background_emotion_session(
     user,
     *,
     mood_label: str,
+    emotion: str = "",
     stress: int,
-    anxiety: int,
     depression: int,
     source: str = "verify_track",
     probabilities: dict | None = None,
 ) -> None:
     label = (mood_label or "Neutral").strip()[:64]
+    emo = (emotion or label).strip()[:64]
 
     MentalHealthResult.objects.create(
         user=user,
         stress_score=int(stress),
-        anxiety_score=int(anxiety),
+        anxiety_score=0,
         depression_score=int(depression),
         dominant_state=label.lower().replace(" ", "_")[:20],
         mood=label,
@@ -66,8 +68,8 @@ def persist_background_emotion_session(
     update_daily_session_metrics(
         user,
         mood_label=label,
+        emotion=emo,
         stress=stress,
-        anxiety=anxiety,
         depression=depression,
     )
 

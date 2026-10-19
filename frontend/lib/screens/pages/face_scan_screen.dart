@@ -4,7 +4,6 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -18,6 +17,11 @@ import '../../config/api_config.dart';
 import '../../utils/mental_health_severity.dart';
 import '../../widgets/deep_face_analysis_hero.dart';
 import 'face_scan_record_screen.dart';
+
+bool _analysisFromOpenFace(String source) {
+  final s = source.trim().toLowerCase();
+  return s == 'openface' || s.startsWith('openface_');
+}
 
 /// OpenFace / behavior analyze responses mix lists and maps depending on API version.
 List<String> _jsonStringList(dynamic value) {
@@ -71,9 +75,6 @@ class FaceScanScreen extends StatefulWidget {
 
 class _FaceScanScreenState extends State<FaceScanScreen> {
   static const int _maxVideoDurationSeconds = 30;
-  static const String _moodCooldownUntilKey = 'face_mood_cooldown_until_ms';
-  static const String _moodRetryAfterKey = 'face_mood_retry_after_ms';
-  static const MethodChannel _trackerChannel = MethodChannel('mindsync/screen_time');
   final ImagePicker _picker = ImagePicker();
   VideoPlayerController? _videoController;
   VideoPlayerController? _sourceVideoController;
@@ -82,8 +83,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   Map<String, dynamic>? _result;
   Map<String, dynamic>? _imageMoodResult;
   Map<String, dynamic>? _videoMoodResult;
-  Map<String, dynamic>? _imageDepressionResult;
-  Map<String, dynamic>? _videoDepressionResult;
+  bool _moodLoading = false;
   bool _loading = false;
   String _stage = 'Preparing...';
   double _progress = 0.0;
@@ -226,46 +226,47 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   }
 
   Future<void> _processVideo({required String scanType}) async {
-    final allowed = await PlanAccessService.instance.canAccess(
-      'emotion_detection_full',
-      forceRefresh: true,
-    );
-    if (!allowed) {
-      _show('Upgrade your plan to access this feature.');
-      return;
-    }
-
-    final video = _selectedVideo;
-    if (video == null) return;
-    if (!kIsWeb) {
-      try {
-        final len = await File(video.path).length();
-        if (len < 12_000) {
-          _show(
-            'Video file is too small. Record again and wait for preview playback.',
-          );
-          return;
-        }
-      } catch (_) {
-        // Server will validate if local check fails.
-      }
-    }
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth.accessToken') ?? '';
-    if (token.isEmpty) {
-      _show('Please login again to continue.');
-      return;
-    }
-
-    setState(() {
-      _loading = true;
-      _stage = 'Uploading video...';
-      _result = null;
-      _analyzedVideoUrl = null;
-    });
-    _startProgressAnimation();
-
     try {
+      final allowed = await PlanAccessService.instance.canAccess(
+        'emotion_detection_full',
+        forceRefresh: true,
+      );
+      if (!allowed) {
+        _show('Upgrade your plan to access this feature.');
+        return;
+      }
+
+      final video = _selectedVideo;
+      if (video == null) return;
+      if (!kIsWeb) {
+        try {
+          final len = await File(video.path).length();
+          if (len < 8_000) {
+            _show(
+              'Video file is too small. Record at least 2–3 seconds, then try again.',
+            );
+            return;
+          }
+        } catch (_) {
+          // Server will validate if local check fails.
+        }
+      }
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('auth.accessToken') ?? '';
+      if (token.isEmpty) {
+        _show('Please login again to continue.');
+        return;
+      }
+
+      if (mounted) {
+        setState(() {
+          _loading = true;
+          _stage = 'Uploading video...';
+          _result = null;
+          _analyzedVideoUrl = null;
+        });
+      }
+      _startProgressAnimation();
       final request = http.MultipartRequest(
         'POST',
         Uri.parse('${ApiConfig.baseUrl}/api/face/behavior/analyze/'),
@@ -282,8 +283,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       );
 
       setState(
-        () => _stage =
-            'OpenFace + depression model + emotion ensemble…',
+        () => _stage = 'Running adult emotion model on your video…',
       );
 
       final streamed = await request.send().timeout(
@@ -309,8 +309,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                 ? analyzedVideoUrlRaw
                 : '${ApiConfig.baseUrl}$analyzedVideoUrlRaw')
           : null;
-      final moodMap = body['mood'];
-      final depMap = body['depression'];
       if (!mounted) return;
       setState(() {
         _result = body;
@@ -318,16 +316,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         _videoController = controller;
         _progress = 1.0;
         _stage = 'Completed';
-        if (moodMap is Map<String, dynamic>) {
-          _videoMoodResult = moodMap;
-        } else if (moodMap is Map) {
-          _videoMoodResult = Map<String, dynamic>.from(moodMap);
-        }
-        if (depMap is Map<String, dynamic>) {
-          _videoDepressionResult = depMap;
-        } else if (depMap is Map) {
-          _videoDepressionResult = Map<String, dynamic>.from(depMap);
-        }
       });
       if (_analyzedVideoUrl != null && _videoController == null) {
         _show(
@@ -386,53 +374,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     return true;
   }
 
-  Future<bool> _isMoodCapturePaused() async {
-    final prefs = await SharedPreferences.getInstance();
-    final until = prefs.getInt(_moodCooldownUntilKey) ?? 0;
-    if (until <= 0) return false;
-    if (DateTime.now().millisecondsSinceEpoch < until) {
-      final mins = ((until - DateTime.now().millisecondsSinceEpoch) / 60000).ceil();
-      _show(
-        'Mood capture is paused for ${mins.clamp(1, 5)} min after your last match (saves data).',
-      );
-      return true;
-    }
-    return false;
-  }
-
-  Future<void> _applyMoodCapturePause() async {
-    final until = DateTime.now().millisecondsSinceEpoch + 5 * 60 * 1000;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_moodCooldownUntilKey, until);
-    await prefs.remove(_moodRetryAfterKey);
-    if (!kIsWeb) {
-      try {
-        await _trackerChannel.invokeMethod<void>('applyFaceMatchPause');
-      } catch (_) {}
-    }
-  }
-
-  Future<void> _scheduleMoodRetryAfterFail() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(
-      _moodRetryAfterKey,
-      DateTime.now().millisecondsSinceEpoch + 60 * 1000,
-    );
-  }
-
-  Future<bool> _canRetryMoodAfterFail() async {
-    final prefs = await SharedPreferences.getInstance();
-    final after = prefs.getInt(_moodRetryAfterKey) ?? 0;
-    if (after <= 0) return true;
-    if (DateTime.now().millisecondsSinceEpoch >= after) return true;
-    final secs = ((after - DateTime.now().millisecondsSinceEpoch) / 1000).ceil();
-    _show('Face did not match — try again in ${secs.clamp(1, 60)} seconds.');
-    return false;
-  }
-
   Future<void> _captureMoodPhotoFromCamera() async {
-    if (await _isMoodCapturePaused()) return;
-    if (!await _canRetryMoodAfterFail()) return;
     if (!await _ensureMoodCameraPermission()) return;
     final file = await _picker.pickImage(
       source: ImageSource.camera,
@@ -443,8 +385,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   }
 
   Future<void> _captureMoodVideoFromCamera() async {
-    if (await _isMoodCapturePaused()) return;
-    if (!await _canRetryMoodAfterFail()) return;
     if (!await _ensureMoodCameraPermission(includeMic: true)) return;
     final file = await _picker.pickVideo(
       source: ImageSource.camera,
@@ -457,7 +397,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
   Future<void> _runMoodImageWithFile(XFile file) async {
     setState(() {
-      _loading = true;
+      _moodLoading = true;
       _stage = 'Analyzing image mood...';
     });
     _startProgressAnimation();
@@ -481,7 +421,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode < 200 || response.statusCode >= 300) {
         final hint = (data['detail'] ?? data['error'])?.toString();
-        await _scheduleMoodRetryAfterFail();
         _show(hint?.isNotEmpty == true ? hint! : 'Image mood detection failed.');
         return;
       }
@@ -493,7 +432,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
           (mood.isEmpty && data['error'] == null) ||
           (mood['error'] != null && mood['prediction'] == null && mood['class'] == null)) {
         final hint = (data['detail'] ?? data['message'] ?? mood?['detail'])?.toString();
-        await _scheduleMoodRetryAfterFail();
         _show(
           hint?.isNotEmpty == true
               ? hint!
@@ -501,14 +439,12 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         );
         return;
       }
-      final depression = data['depression'] as Map<String, dynamic>?;
       if (!mounted) return;
       setState(() {
         _imageMoodResult = mood;
-        _imageDepressionResult = depression;
+        _videoMoodResult = null;
         _progress = 1.0;
       });
-      await _applyMoodCapturePause();
       final label =
           (mood['prediction'] ?? mood['class'])?.toString();
       final msg = (data['message'] ?? label)?.toString();
@@ -522,14 +458,14 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     } finally {
       _progressTimer?.cancel();
       if (mounted) {
-        setState(() => _loading = false);
+        setState(() => _moodLoading = false);
       }
     }
   }
 
   Future<void> _runMoodVideoWithFile(XFile file) async {
     setState(() {
-      _loading = true;
+      _moodLoading = true;
       _stage = 'Analyzing video mood...';
     });
     _startProgressAnimation();
@@ -551,7 +487,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       );
       final response = await http.Response.fromStream(streamed);
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        await _scheduleMoodRetryAfterFail();
         _show('Video mood detection failed.');
         return;
       }
@@ -559,7 +494,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       final mood = data['mood'] as Map<String, dynamic>?;
       if (mood == null || mood.isEmpty) {
         final hint = (data['message'] ?? data['detail'])?.toString();
-        await _scheduleMoodRetryAfterFail();
         _show(
           hint?.isNotEmpty == true
               ? hint!
@@ -567,14 +501,12 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         );
         return;
       }
-      final depression = data['depression'] as Map<String, dynamic>?;
       if (!mounted) return;
       setState(() {
         _videoMoodResult = mood;
-        _videoDepressionResult = depression;
+        _imageMoodResult = null;
         _progress = 1.0;
       });
-      await _applyMoodCapturePause();
       final msg = (data['message'] ?? mood['prediction'])?.toString();
       _show(
         msg?.isNotEmpty == true ? msg! : 'Video mood prediction complete.',
@@ -584,7 +516,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     } finally {
       _progressTimer?.cancel();
       if (mounted) {
-        setState(() => _loading = false);
+        setState(() => _moodLoading = false);
       }
     }
   }
@@ -611,14 +543,23 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       );
     }
     final result = _result;
-    final stress = int.tryParse('${result?['stress_score'] ?? 0}') ?? 0;
-    final anxiety = int.tryParse('${result?['anxiety_score'] ?? 0}') ?? 0;
-    final depression = int.tryParse('${result?['depression_score'] ?? 0}') ?? 0;
-    final dominant = (result?['dominant_state'] ?? 'unknown').toString();
-    final severity =
-        int.tryParse('${result?['overall_severity_score'] ?? 0}') ?? 0;
     final analysisSource =
-        (result?['analysis_source'] ?? 'openface').toString();
+        (result?['analysis_source'] ?? 'emotion_model_video').toString();
+    final modelOnly = result?['model_only_pipeline'] == true ||
+        !_analysisFromOpenFace(analysisSource);
+    final stress = modelOnly
+        ? 0
+        : int.tryParse('${result?['stress_score'] ?? 0}') ?? 0;
+    final anxiety = modelOnly
+        ? 0
+        : int.tryParse('${result?['anxiety_score'] ?? 0}') ?? 0;
+    final depression = modelOnly
+        ? 0
+        : int.tryParse('${result?['depression_score'] ?? 0}') ?? 0;
+    final dominant = (result?['dominant_state'] ?? 'unknown').toString();
+    final severity = modelOnly
+        ? 0
+        : int.tryParse('${result?['overall_severity_score'] ?? 0}') ?? 0;
     final trackedBadge = _trackedBadgeForAnalysisSource(analysisSource);
 
     return Scaffold(
@@ -666,21 +607,22 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                 ),
               ),
             const SizedBox(height: 14),
-            if (result['mood'] is Map) ...[
-              _SimpleMoodResultCard(
-                title: 'Emotion model (video)',
-                payload: Map<String, dynamic>.from(result['mood'] as Map),
-              ),
-              const SizedBox(height: 10),
-            ],
-            if (result['depression'] is Map) ...[
+            if (result['depression'] is Map && !modelOnly) ...[
               _DepressionResultCard(
-                title: 'Depression screening (OpenFace AU)',
+                title: modelOnly
+                    ? 'Depression screening (OpenFace MLP)'
+                    : 'Depression screening (OpenFace AU)',
                 payload: Map<String, dynamic>.from(result['depression'] as Map),
               ),
               const SizedBox(height: 14),
             ],
             _AnalysisSessionCard(
+              modelOnly: modelOnly,
+              emotionLabel:
+                  (result['emotion_label'] ?? result['web_style_prediction'] ?? '')
+                      .toString(),
+              depressionLabel:
+                  (result['depression_screening_label'] ?? '').toString(),
               dominant: dominant,
               severity: severity,
               stress: stress,
@@ -746,61 +688,72 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
             ),
           ],
           const SizedBox(height: 22),
-          const Text(
-            'Mood Detector',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            'Predict mood from any face — no login identity check on this screen',
-            style: TextStyle(fontSize: 12, color: Color(0xFF6E7381)),
-          ),
-          const SizedBox(height: 10),
-          _ScanOptionTile(
-            title: 'Mood scan (image)',
-            subtitle: kIsWeb
-                ? 'Take a photo with your webcam'
-                : 'Capture a photo with the front camera',
-            icon: Icons.photo_camera_outlined,
-            onTap: _loading ? null : _captureMoodPhotoFromCamera,
-          ),
-          const SizedBox(height: 10),
-          _ScanOptionTile(
-            title: 'Mood scan (video)',
-            subtitle: kIsWeb
-                ? 'Record a short clip with your webcam'
-                : 'Record a short video with the front camera',
-            icon: Icons.videocam_outlined,
-            onTap: _loading ? null : _captureMoodVideoFromCamera,
-          ),
-          if (_imageMoodResult != null) ...[
-            const SizedBox(height: 8),
-            _SimpleMoodResultCard(
-              title: 'Image Mood Result',
-              payload: _imageMoodResult!,
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFE8EAF3)),
             ),
-          ],
-          if (_imageDepressionResult != null) ...[
-            const SizedBox(height: 8),
-            _DepressionResultCard(
-              title: 'Image Depression Screening',
-              payload: _imageDepressionResult!,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Mood Detector',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Try anytime with image or video — not tied to face unlock.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF6E7381)),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'ResNet18, EfficientNet & MobileNet · emotion only',
+                  style: TextStyle(fontSize: 11, color: Color(0xFF9CA3AF)),
+                ),
+                const SizedBox(height: 12),
+                _ScanOptionTile(
+                  title: 'Mood scan (image)',
+                  subtitle: kIsWeb
+                      ? 'Take a photo with your webcam'
+                      : 'Capture a photo with the front camera',
+                  icon: Icons.photo_camera_outlined,
+                  onTap: _moodLoading ? null : _captureMoodPhotoFromCamera,
+                ),
+                const SizedBox(height: 10),
+                _ScanOptionTile(
+                  title: 'Mood scan (video)',
+                  subtitle: kIsWeb
+                      ? 'Record a short clip with your webcam'
+                      : 'Record a short video with the front camera',
+                  icon: Icons.videocam_outlined,
+                  onTap: _moodLoading ? null : _captureMoodVideoFromCamera,
+                ),
+                if (_moodLoading) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    _stage,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const LinearProgressIndicator(),
+                ],
+                if (_imageMoodResult != null || _videoMoodResult != null) ...[
+                  const SizedBox(height: 14),
+                  _MoodDetectorResultCard(
+                    modality: _videoMoodResult != null ? 'video' : 'image',
+                    payload: Map<String, dynamic>.from(
+                      (_videoMoodResult ?? _imageMoodResult)!,
+                    ),
+                  ),
+                ],
+              ],
             ),
-          ],
-          if (_videoMoodResult != null) ...[
-            const SizedBox(height: 8),
-            _SimpleMoodResultCard(
-              title: 'Video Mood Result',
-              payload: _videoMoodResult!,
-            ),
-          ],
-          if (_videoDepressionResult != null) ...[
-            const SizedBox(height: 8),
-            _DepressionResultCard(
-              title: 'Video Depression Screening',
-              payload: _videoDepressionResult!,
-            ),
-          ],
+          ),
         ],
       ),
     );
@@ -971,6 +924,9 @@ class _TrackedAnalysisVideoCard extends StatelessWidget {
 
 class _AnalysisSessionCard extends StatelessWidget {
   const _AnalysisSessionCard({
+    this.modelOnly = false,
+    this.emotionLabel = '',
+    this.depressionLabel = '',
     required this.dominant,
     required this.severity,
     required this.stress,
@@ -991,6 +947,9 @@ class _AnalysisSessionCard extends StatelessWidget {
     required this.topStates,
   });
 
+  final bool modelOnly;
+  final String emotionLabel;
+  final String depressionLabel;
   final String dominant;
   final int severity;
   final int stress;
@@ -1012,100 +971,201 @@ class _AnalysisSessionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final topText = topStates.isEmpty ? 'N/A' : topStates.join(', ');
+    final hasEmotion = emotionLabel.trim().isNotEmpty ||
+        webStylePrediction.trim().isNotEmpty ||
+        deepfaceDominant.trim().isNotEmpty;
+    final emotionDisplay = emotionLabel.trim().isNotEmpty
+        ? emotionLabel.trim()
+        : (webStylePrediction.trim().isNotEmpty
+            ? webStylePrediction.trim()
+            : deepfaceDominant.trim());
+    final confPct = webStyleConfidence <= 0
+        ? null
+        : (webStyleConfidence <= 1
+            ? (webStyleConfidence * 100).round()
+            : webStyleConfidence.round());
+    final showOpenFaceAu = !modelOnly && _analysisFromOpenFace(analysisSource);
+
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: const Color(0xFFE8EAF3)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Analysis Session Summary',
+            'Video analysis summary',
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
           ),
-          if (analysisSource.contains('mediapipe')) ...[
-            const SizedBox(height: 8),
+          const SizedBox(height: 4),
+          Text(
+            modelOnly
+                ? 'Mac / cross-platform: adult emotion model on sampled frames. OpenFace depression screening is not available on this device.'
+                : 'OpenFace AU pipeline with model labels where available.',
+            style: const TextStyle(fontSize: 11, color: Color(0xFF6E7381)),
+          ),
+          const SizedBox(height: 14),
+          if (hasEmotion) ...[
             Container(
-              padding: const EdgeInsets.all(10),
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFFE9FBF6),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFF9DE5D5)),
-              ),
-              child: const Text(
-                'MediaPipe face mesh landmarks drive AU geometry; emotion model fills AUs mesh cannot see. Stress, anxiety, and depression use the same STATE_AUS pipeline as OpenFace.',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF0D5C4A),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFEDE9FE), Color(0xFFF5F3FF)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Emotion model',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF6D28D9),
+                      letterSpacing: 0.6,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    emotionDisplay,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF1A2130),
+                    ),
+                  ),
+                  if (confPct != null || deepfaceFrames > 0) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      [
+                        if (confPct != null) '$confPct% avg confidence',
+                        if (deepfaceFrames > 0) '$deepfaceFrames frames sampled',
+                      ].join(' · '),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF5B5670),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
-          ] else if (analysisSource == 'emotion_model_fallback') ...[
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE8F4FD),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFB6D9F7)),
-              ),
-              child: Text(
-                webStylePrediction.isNotEmpty
-                    ? 'Web-style mood: $webStylePrediction '
-                        '(${webStyleConfidence <= 1 ? (webStyleConfidence * 100).round() : webStyleConfidence.round()}% confidence)'
-                    : 'Scores from face mesh AU geometry and emotion model fusion.',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF1A4A7A),
-                ),
-              ),
+          ] else ...[
+            _UnavailableBanner(
+              message:
+                  'Emotion model did not return a label. Retry with your face centered and good lighting.',
             ),
           ],
-          const SizedBox(height: 8),
-          Text('Dominant State: ${dominant.toUpperCase()}'),
-          Row(
-            children: [
-              const Text('Overall Severity: '),
-              MentalHealthScoreDisplay(
-                percent: severity,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                labelFontWeight: FontWeight.w800,
+          const SizedBox(height: 12),
+          if (depressionLabel.trim().isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF3EEFF),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFD4C4F7)),
               ),
-            ],
-          ),
-          Text('Top Match States: $topText'),
-          const SizedBox(height: 10),
-          _ScoreCard(title: 'Stress', value: stress),
-          const SizedBox(height: 8),
-          _ScoreCard(title: 'Anxiety', value: anxiety),
-          const SizedBox(height: 8),
-          _ScoreCard(title: 'Depression', value: depression),
-          const SizedBox(height: 10),
-          _BulletCard(title: 'Facial Behavior Insights', items: behavioralInsights),
-          const SizedBox(height: 10),
-          _BulletCard(title: 'AI Recommendations', items: recommendations),
-          const SizedBox(height: 10),
-          _AusCard(aus: aus),
-          const SizedBox(height: 10),
-          _BulletCard(title: 'Active AUs (mesh + model)', items: activeAus),
-          const SizedBox(height: 10),
-          _AuDiseaseRelationCard(map: matchedAusByState),
-          const SizedBox(height: 10),
-          _StateProbabilityCard(probabilities: stateProbabilities),
-          const SizedBox(height: 10),
-          _DeepFaceSummaryCard(
-            dominant: deepfaceDominant,
-            framesAnalyzed: deepfaceFrames,
-            summary: deepfaceSummary,
-          ),
+              child: Row(
+                children: [
+                  const Icon(Icons.health_and_safety_outlined,
+                      color: Color(0xFF5B3E9E), size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Depression screening: ${depressionLabel.trim()}',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF3D2A6B),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ] else if (modelOnly) ...[
+            _UnavailableBanner(
+              message:
+                  'Depression MLP needs OpenFace AU CSV on the server (Windows). Not available on macOS — emotion results above are still valid.',
+            ),
+          ],
+          if (recommendations.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _BulletCard(title: 'Suggestions', items: recommendations),
+          ],
+          if (behavioralInsights.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _BulletCard(title: 'What we measured', items: behavioralInsights),
+          ],
+          if (showOpenFaceAu) ...[
+            const SizedBox(height: 10),
+            Text('Dominant state: ${dominant.toUpperCase()}'),
+            const SizedBox(height: 8),
+            _ScoreCard(title: 'Stress', value: stress),
+            const SizedBox(height: 8),
+            _ScoreCard(title: 'Anxiety', value: anxiety),
+            const SizedBox(height: 8),
+            _ScoreCard(title: 'Depression', value: depression),
+            const SizedBox(height: 10),
+            _AusCard(aus: aus),
+            const SizedBox(height: 10),
+            _BulletCard(title: 'Active AUs', items: activeAus),
+            const SizedBox(height: 10),
+            _AuDiseaseRelationCard(map: matchedAusByState),
+            const SizedBox(height: 10),
+            _StateProbabilityCard(probabilities: stateProbabilities),
+          ],
+          if (deepfaceSummary.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _DeepFaceSummaryCard(
+              dominant: deepfaceDominant,
+              framesAnalyzed: deepfaceFrames,
+              summary: deepfaceSummary,
+            ),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+class _UnavailableBanner extends StatelessWidget {
+  const _UnavailableBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7E8),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFE2A9)),
+      ),
+      child: Text(
+        message,
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: Color(0xFF7A5B00),
+        ),
       ),
     );
   }
@@ -1238,7 +1298,6 @@ class _DepressionResultCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final label = (payload['predicted_label'] ?? '—').toString();
-    final score = payload['depression_score'];
     final probs = payload['average_class_probabilities_percent'];
     return Container(
       padding: const EdgeInsets.all(14),
@@ -1252,11 +1311,14 @@ class _DepressionResultCard extends StatelessWidget {
         children: [
           Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
-          Text('Screening class: $label'),
-          if (score != null) ...[
-            const SizedBox(height: 4),
-            Text('Depression index: $score'),
-          ],
+          Text(
+            'Screening class: $label',
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF1A2130),
+            ),
+          ),
           if (probs is Map) ...[
             const SizedBox(height: 8),
             const Text(
@@ -1281,32 +1343,200 @@ class _DepressionResultCard extends StatelessWidget {
   }
 }
 
-class _SimpleMoodResultCard extends StatelessWidget {
-  const _SimpleMoodResultCard({required this.title, required this.payload});
+class _MoodDetectorResultCard extends StatelessWidget {
+  const _MoodDetectorResultCard({
+    required this.modality,
+    required this.payload,
+  });
 
-  final String title;
+  final String modality;
   final Map<String, dynamic> payload;
+
+  static String _pct(dynamic conf) {
+    final c = double.tryParse('$conf') ?? 0;
+    final pct = c <= 1 ? (c * 100).round() : c.round();
+    return '$pct%';
+  }
+
+  List<Map<String, dynamic>> _modelRows() {
+    final raw = payload['model_predictions'];
+    if (raw is List) {
+      return raw
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+    final votes = payload['architecture_votes'];
+    final confs = payload['architecture_confidences'];
+    if (votes is! Map) return const [];
+    const names = {
+      'resnet18': 'ResNet18',
+      'efficientnet_b0': 'EfficientNet',
+      'mobilenetv3_large': 'MobileNet',
+    };
+    final order = ['resnet18', 'efficientnet_b0', 'mobilenetv3_large'];
+    final rows = <Map<String, dynamic>>[];
+    for (final arch in order) {
+      if (!votes.containsKey(arch)) continue;
+      rows.add({
+        'model': names[arch] ?? arch,
+        'label': votes[arch],
+        'confidence': confs is Map ? confs[arch] : null,
+      });
+    }
+    return rows;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final prediction =
-        (payload['prediction'] ?? payload['emotion'] ?? 'Unknown').toString();
-    final confidence = (payload['confidence'] ?? '').toString();
+    final prediction = (payload['majority_vote_label'] ??
+            payload['prediction'] ??
+            payload['class'] ??
+            payload['dominant'] ??
+            '—')
+        .toString();
+    final conf = payload['confidence'];
+    final isVideo = modality == 'video';
+    final frames = payload['frames'];
+    final modelRows = _modelRows();
+
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE4E6EE)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 6),
-          Text('Prediction: $prediction'),
-          if (confidence.isNotEmpty) ...[
+          Row(
+            children: [
+              Icon(
+                isVideo ? Icons.videocam_rounded : Icons.photo_rounded,
+                size: 20,
+                color: const Color(0xFF6D28D9),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                isVideo ? 'Mood detector · video' : 'Mood detector · image',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF6D28D9),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            prediction,
+            style: const TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
+              color: Color(0xFF1A2130),
+              height: 1.05,
+            ),
+          ),
+          if (conf != null) ...[
             const SizedBox(height: 4),
-            Text('Confidence: $confidence'),
+            Text(
+              'Majority vote · ${_pct(conf)} confidence',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF6E7381),
+              ),
+            ),
+          ],
+          if (modelRows.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            const Text(
+              'Model predictions',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF868894),
+                letterSpacing: 0.4,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...modelRows.map((row) {
+              final name = (row['model'] ?? 'Model').toString();
+              final label = (row['label'] ?? '—').toString();
+              final c = row['confidence'];
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: Text(
+                        name,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Text(
+                        label,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF1A2130),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      c != null ? _pct(c) : '—',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF6E7381),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+          if (isVideo && frames is List && frames.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            const Text(
+              'Sampled frames',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF868894),
+              ),
+            ),
+            const SizedBox(height: 6),
+            ...frames.take(8).map((f) {
+              if (f is! Map) return const SizedBox.shrink();
+              final t = f['time_sec'];
+              final lbl = (f['label'] ?? '—').toString();
+              final fc = f['confidence'];
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  '${t ?? '?'}s · $lbl · ${_pct(fc)}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF4B5563),
+                  ),
+                ),
+              );
+            }),
           ],
         ],
       ),

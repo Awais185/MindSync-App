@@ -2,6 +2,11 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularRedocView,
+    SpectacularSwaggerView,
+)
 from chat.views import AnalyzeImageAPIView, AnalyzeVideoAPIView
 from . import views
 
@@ -9,6 +14,17 @@ from . import views
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('', views.home, name='home'),
+    path('api/schema/', SpectacularAPIView.as_view(), name='api-schema'),
+    path(
+        'api/docs/',
+        SpectacularSwaggerView.as_view(url_name='api-schema'),
+        name='api-swagger-ui',
+    ),
+    path(
+        'api/redoc/',
+        SpectacularRedocView.as_view(url_name='api-schema'),
+        name='api-redoc',
+    ),
     path('api/health/', views.api_health, name='api_health'),
     path('api/public/branding/', views.PublicAppBrandingAPIView.as_view(), name='public_branding'),
     path('api/public/subscription-plans/', views.PublicSubscriptionPlanListAPIView.as_view(), name='public_subscription_plans'),

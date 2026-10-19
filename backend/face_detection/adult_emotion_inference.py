@@ -32,6 +32,35 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 DEFAULT_ENSEMBLE_MODELS = ("resnet18", "efficientnet_b0", "mobilenetv3_large")
 
+ARCHITECTURE_DISPLAY_NAMES: dict[str, str] = {
+    "resnet18": "ResNet18",
+    "efficientnet_b0": "EfficientNet",
+    "mobilenetv3_large": "MobileNet",
+}
+
+
+def _model_predictions_payload(
+    architecture_votes: dict[str, str],
+    architecture_confidences: dict[str, float],
+) -> list[dict[str, Any]]:
+    order = DEFAULT_ENSEMBLE_MODELS
+    rows: list[dict[str, Any]] = []
+    for arch in order:
+        if arch not in architecture_votes:
+            continue
+        from .json_safe import finite_float
+
+        conf = finite_float(architecture_confidences.get(arch), 0.0)
+        rows.append(
+            {
+                "model": ARCHITECTURE_DISPLAY_NAMES.get(arch, arch),
+                "architecture": arch,
+                "label": architecture_votes[arch],
+                "confidence": round(conf, 4),
+            }
+        )
+    return rows
+
 _EMOTION_MH_SCORES: dict[str, tuple[int, int, int]] = {
     "anger": (82, 72, 42),
     "contempt": (70, 58, 40),
@@ -279,12 +308,27 @@ class AdultEmotionPredictor:
         fused, pred_idx, arch_votes, arch_conf, majority_label, majority_count = (
             self._architecture_mean_probs(tensor)
         )
-        label = self.cfg.class_display[pred_idx]
+        fused_conf = float(fused[pred_idx])
+        # Final label: majority vote across the three architectures (ties → soft fusion argmax).
+        final_label = majority_label
+        if majority_count < 2 and len(arch_votes) >= 2:
+            final_label = self.cfg.class_display[pred_idx]
+        majority_conf = float(
+            np.mean(
+                [
+                    arch_conf[a]
+                    for a, lbl in arch_votes.items()
+                    if lbl == final_label
+                ]
+            )
+            if arch_votes
+            else fused_conf
+        )
 
         return {
-            "class": label,
-            "prediction": label,
-            "confidence": float(fused[pred_idx]),
+            "class": final_label,
+            "prediction": final_label,
+            "confidence": round(majority_conf, 4),
             "probabilities": {
                 self.cfg.class_display[i]: float(fused[i])
                 for i in range(len(self.cfg.class_display))
@@ -293,7 +337,8 @@ class AdultEmotionPredictor:
             "ensemble_architectures": list(self._models_by_arch.keys()),
             "architecture_votes": arch_votes,
             "architecture_confidences": arch_conf,
-            "majority_vote_label": majority_label,
+            "model_predictions": _model_predictions_payload(arch_votes, arch_conf),
+            "majority_vote_label": final_label,
             "majority_vote_count": majority_count,
             "status": "success",
         }
@@ -367,6 +412,8 @@ def predict_video_path(
     interval = (
         int(frame_rate) if sample_fps is None else max(int(frame_rate / sample_fps), 1)
     )
+    from .json_safe import finite_float, json_safe_payload
+
     predictor = get_adult_emotion_predictor()
     predictions: list[dict[str, Any]] = []
     frame_num = 0
@@ -379,13 +426,17 @@ def predict_video_path(
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 result = predictor.predict_pil(Image.fromarray(rgb))
                 label = str(result.get("class") or "")
-                conf = float(result.get("confidence") or 0.0)
+                conf = finite_float(result.get("confidence"), 0.0)
                 predictions.append(
                     {
                         "frame_num": frame_num,
                         "time_sec": round(frame_num / frame_rate, 3),
-                        "label": label,
+                        "label": str(result.get("prediction") or label),
                         "confidence": conf,
+                        "architecture_votes": result.get("architecture_votes"),
+                        "architecture_confidences": json_safe_payload(
+                            result.get("architecture_confidences")
+                        ),
                     }
                 )
                 if max_frames is not None and len(predictions) >= max_frames:
@@ -403,20 +454,82 @@ def predict_video_path(
             "frame_count": 0,
         }
 
-    from collections import Counter
+    from collections import Counter, defaultdict
 
     labels = [p["label"] for p in predictions if p.get("label")]
     dominant = Counter(labels).most_common(1)[0][0] if labels else None
-    confs = [p["confidence"] for p in predictions if p.get("label") == dominant]
-    mean_conf = sum(confs) / len(confs) if confs else 0.0
+
+    confs = [
+        finite_float(p.get("confidence"), 0.0)
+        for p in predictions
+        if p.get("label") == dominant
+    ]
+    mean_conf = finite_float(
+        sum(confs) / len(confs) if confs else 0.0,
+        0.0,
+    )
+
+    arch_label_counts: dict[str, Counter] = defaultdict(Counter)
+    arch_conf_lists: dict[str, list[float]] = defaultdict(list)
+    for frame in predictions:
+        per_arch = frame.get("architecture_votes")
+        per_conf = frame.get("architecture_confidences")
+        if not isinstance(per_arch, dict):
+            continue
+        for arch, lbl in per_arch.items():
+            arch_label_counts[arch][lbl] += 1
+            if isinstance(per_conf, dict) and arch in per_conf:
+                arch_conf_lists[arch].append(float(per_conf[arch]))
+
+    arch_votes: dict[str, str] = {}
+    arch_conf: dict[str, float] = {}
+    for arch, counts in arch_label_counts.items():
+        top_label, _ = counts.most_common(1)[0]
+        arch_votes[arch] = top_label
+        confs_arch = arch_conf_lists.get(arch) or []
+        from .json_safe import finite_float
+
+        arch_conf[arch] = finite_float(
+            sum(confs_arch) / len(confs_arch) if confs_arch else 0.0,
+            0.0,
+        )
+
+    model_predictions = _model_predictions_payload(arch_votes, arch_conf)
+    hard_vote_labels = [row["label"] for row in model_predictions]
+    if hard_vote_labels:
+        majority_label, majority_count = Counter(hard_vote_labels).most_common(1)[0]
+        if majority_count >= 2:
+            dominant = majority_label
+            from .json_safe import finite_float
+
+            mean_conf = finite_float(
+                np.mean(
+                    [
+                        row["confidence"]
+                        for row in model_predictions
+                        if row["label"] == majority_label
+                    ]
+                ),
+                mean_conf,
+            )
+
     return {
         "status": "success",
         "modality": "video",
         "prediction": dominant,
         "dominant": dominant,
-        "confidence": round(mean_conf, 4),
+        "confidence": round(finite_float(mean_conf, 0.0), 4),
         "frame_count": len(predictions),
-        "frames": predictions,
-        "summary": dict(Counter(labels)),
+        "frames": [
+            {
+                "frame_num": p.get("frame_num"),
+                "time_sec": p.get("time_sec"),
+                "label": p.get("label"),
+                "confidence": finite_float(p.get("confidence"), 0.0),
+            }
+            for p in predictions
+        ],
+        "model_predictions": model_predictions,
+        "majority_vote_label": dominant,
         "model": "tri_architecture_ensemble",
     }

@@ -1,4 +1,4 @@
-"""Manual UI + shared helpers: emotion (frames) + depression (OpenFace CSV)."""
+"""Manual mood-detector UI — adult emotion ensemble only (no OpenFace)."""
 
 from __future__ import annotations
 
@@ -68,37 +68,14 @@ def _depression_from_video_path(video_path: str) -> dict[str, Any]:
 
 
 def analyze_manual_image(image_bytes: bytes) -> dict[str, Any]:
-    from .mood_scan_service import analyze_image_bytes
+    from .mood_scan_service import analyze_image_bytes, public_mood_payload
 
-    mood = analyze_image_bytes(image_bytes)
-    depression: dict[str, Any] = {"skipped": True, "reason": "openface_requires_video"}
-    tmp = None
-    try:
-        tmp = _image_bytes_to_temp_video(image_bytes)
-        depression = _depression_from_video_path(tmp)
-    except Exception as exc:
-        logger.warning("Manual image depression path failed: %s", exc)
-        depression = {"error": "depression_analysis_failed", "detail": str(exc)[:300]}
-    finally:
-        if tmp and os.path.exists(tmp):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-    return {"mood": mood, "depression": depression, "mood_saved": False}
+    mood = public_mood_payload(analyze_image_bytes(image_bytes))
+    return {"mood": mood, "mood_saved": False}
 
 
 def analyze_manual_video(video_path: str) -> dict[str, Any]:
-    from .adult_emotion_inference import predict_video_path as adult_emotion_video
+    from .mood_scan_service import analyze_video_path, public_mood_payload
 
-    mood = adult_emotion_video(video_path, max_frames=4, sample_fps=0.35)
-    try:
-        depression = _depression_from_video_path(video_path)
-    except Exception as exc:
-        logger.warning("Manual video depression path failed: %s", exc)
-        depression = {"error": "depression_analysis_failed", "detail": str(exc)[:300]}
-    return {
-        "mood": mood,
-        "depression": depression,
-        "mood_saved": False,
-    }
+    mood = public_mood_payload(analyze_video_path(video_path))
+    return {"mood": mood, "mood_saved": False}

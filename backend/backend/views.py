@@ -20,6 +20,9 @@ def api_health(request):
             "service": "MindSync API",
             "post_chat": "/api/chat/",
             "get_health": "/api/health/",
+            "swagger_ui": "/api/docs/",
+            "openapi_schema": "/api/schema/",
+            "redoc": "/api/redoc/",
             "note": "Chat requires Authorization: Bearer <access_token> and JSON body {\"message\": \"...\"}",
         }
     )
@@ -46,5 +49,9 @@ class PublicSubscriptionPlanListAPIView(APIView):
     permission_classes = (AllowAny,)
 
     def get(self, request):
-        plans = SubscriptionPlan.objects.filter(is_active=True).order_by('sort_order', 'id')
+        plans = (
+            SubscriptionPlan.objects.filter(is_active=True)
+            .exclude(slug='doctor')
+            .order_by('sort_order', 'id')
+        )
         return Response({'results': SubscriptionPlanSerializer(plans, many=True).data})

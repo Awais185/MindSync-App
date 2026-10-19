@@ -18,6 +18,7 @@ class RecommendationScreen extends StatefulWidget {
 
 class _RecommendationScreenState extends State<RecommendationScreen> {
   late Future<WellnessRecommendationResponse> _recommendationsFuture;
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
@@ -25,7 +26,22 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
     _recommendationsFuture = _fetchWithAccessCheck();
   }
 
-  Future<WellnessRecommendationResponse> _fetchWithAccessCheck() async {
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _reloadRecommendations() async {
+    setState(() {
+      _recommendationsFuture = _fetchWithAccessCheck(forceRefresh: true);
+    });
+    await _recommendationsFuture;
+  }
+
+  Future<WellnessRecommendationResponse> _fetchWithAccessCheck({
+    bool forceRefresh = false,
+  }) async {
     final allowed = await PlanAccessService.instance.canAccess(
       'personalized_suggestions',
       forceRefresh: true,
@@ -41,25 +57,38 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
       }
       return WellnessRecommendationResponse.empty;
     }
-    return RecommendationsService.instance.fetchRecommendations(range: 'week');
+    return RecommendationsService.instance.fetchRecommendations(
+      range: 'week',
+      forceRefresh: forceRefresh,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final padding = MindSyncLayout.pagePadding(context, top: 16, bottom: 100);
+
     return Scaffold(
       backgroundColor: const Color(0xFFF5F6FA),
       body: SafeArea(
-        child: ListView(
-          padding: MindSyncLayout.pagePadding(context, top: 16, bottom: 100),
-          children: [
-            MindSyncAppHeader(
-              onBack: () => Navigator.of(context).pop(),
+        child: RefreshIndicator(
+          color: const Color(0xFF6F39E8),
+          onRefresh: _reloadRecommendations,
+          child: SingleChildScrollView(
+            controller: _scrollController,
+            physics: const AlwaysScrollableScrollPhysics(
+              parent: BouncingScrollPhysics(),
             ),
-            const SizedBox(height: 20),
-
-            // Title Section
+            primary: false,
+            padding: padding,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                MindSyncAppHeader(
+                  onBack: () => Navigator.of(context).pop(),
+                ),
+                const SizedBox(height: 20),
             const Text(
-              'Sanctuary\nRecommendations',
+              'Recommendations',
               style: TextStyle(
                 fontSize: 32,
                 fontWeight: FontWeight.w800,
@@ -96,54 +125,32 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
                 }
                 final modelOutput =
                     snapshot.data ?? WellnessRecommendationResponse.empty;
-                final recs = modelOutput.cards;
-                if (recs.isEmpty) {
-                  return Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                    child: const Text(
-                      'No AI recommendations available yet. Try again after more behavioral data is collected.',
-                      style: TextStyle(
-                        fontSize: 13,
-                        height: 1.4,
-                        color: Color(0xFF676B79),
-                      ),
-                    ),
+                if (!modelOutput.hasSummary) {
+                  return _RecError(
+                    onRetry: () {
+                      setState(() {
+                        _recommendationsFuture =
+                            _fetchWithAccessCheck(forceRefresh: true);
+                      });
+                    },
                   );
                 }
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _RiskSummaryCard(
-                      riskLevel: modelOutput.riskLevel,
-                      mainIssues: modelOutput.mainIssues,
+                    _AiWellnessSummaryCard(
+                      lines: modelOutput.summaryLines,
+                      cached: modelOutput.cached,
+                      source: modelOutput.source,
                     ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Personalized Recommendations',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 20,
-                        height: 1.2,
-                        color: Color(0xFF161820),
-                        letterSpacing: -0.3,
+                    if (modelOutput.mainIssues.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      _RiskSummaryCard(
+                        riskLevel: modelOutput.riskLevel,
+                        mainIssues: modelOutput.mainIssues,
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    ...recs.map(
-                      (r) => _RecommendationCard(
-                        title: r.title,
-                        description: r.description,
-                        category: r.category,
-                        priority: r.priority,
-                        action: r.action,
-                      ),
-                    ),
+                    ],
                     const SizedBox(height: 20),
                   ],
                 );
@@ -473,7 +480,9 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
                 ],
               ),
             ),
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -566,16 +575,113 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
   }
 }
 
+class _AiWellnessSummaryCard extends StatelessWidget {
+  const _AiWellnessSummaryCard({
+    required this.lines,
+    required this.cached,
+    required this.source,
+  });
+
+  final List<String> lines;
+  final bool cached;
+  final String source;
+
+  @override
+  Widget build(BuildContext context) {
+    final displayLines = lines.isNotEmpty ? lines : const <String>[];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'AI Recommendations',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.4,
+                    color: Color(0xFF6F39E8),
+                  ),
+                ),
+              ),
+              if (cached)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0EBFF),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    '7-day plan',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF6F39E8),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            source == 'gemini'
+                ? 'Based on your last 7 days of MindSync data'
+                : 'Based on your recent MindSync activity',
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF8A8D99),
+            ),
+          ),
+          const SizedBox(height: 14),
+          ...displayLines.map(
+            (line) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                line,
+                style: const TextStyle(
+                  fontSize: 14,
+                  height: 1.55,
+                  fontWeight: FontWeight.w500,
+                  color: Color(0xFF2D3142),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _RecLoading extends StatelessWidget {
   const _RecLoading();
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    return const Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: const [
+      children: [
         Text(
-          'Personalized Recommendations',
+          'AI Recommendations',
           style: TextStyle(
             fontWeight: FontWeight.w800,
             fontSize: 20,
@@ -584,8 +690,6 @@ class _RecLoading extends StatelessWidget {
             letterSpacing: -0.3,
           ),
         ),
-        SizedBox(height: 12),
-        _SkeletonRecCard(),
         SizedBox(height: 12),
         _SkeletonRecCard(),
       ],

@@ -58,8 +58,10 @@ def _mood_score_from_label(label: str) -> float:
 
 
 def _graph_label(label: str) -> str:
-    cat = _mood_category(label)
-    return {'happy': 'Happy', 'sad': 'Sad', 'neutral': 'Neutral'}[cat]
+    """Chart / chip text — prefer the model class name (Anger, Happiness, …)."""
+    if not label or label == 'Unknown':
+        return ''
+    return str(label).replace('_', ' ').strip().title()
 
 
 def _first_preview_media(request, day_scans: list[FaceMoodScan]) -> dict[str, Any] | None:
@@ -225,8 +227,15 @@ def build_weekly_mood_payload(user: User, request=None) -> dict[str, Any]:
         d += timedelta(days=1)
 
     insights = build_mood_insights(scans)
+    latest_mood = _mood_label_from_json(scans[-1].mood) if scans else ''
+    has_graph_data = entry_count >= 1
     has_summary = entry_count >= 2
-    dominant = insights['dominant_mood'] if has_summary else ''
+    if entry_count == 1:
+        dominant = latest_mood
+    elif has_summary:
+        dominant = insights['dominant_mood']
+    else:
+        dominant = ''
 
     recent_entries: list[dict[str, Any]] = []
     for scan in list(reversed(scans[-8:])):
@@ -244,8 +253,9 @@ def build_weekly_mood_payload(user: User, request=None) -> dict[str, Any]:
     all_labels = [_mood_label_from_json(s.mood) for s in scans]
     all_scores = [_mood_score_from_label(l) for l in all_labels] if all_labels else []
     overall_score = round(sum(all_scores) / len(all_scores), 3) if all_scores else None
-    overall_label = _graph_label(dominant) if dominant else ''
-    overall_category = _mood_category(dominant) if dominant else ''
+    display_mood = latest_mood or dominant
+    overall_label = _graph_label(display_mood) if display_mood else ''
+    overall_category = _mood_category(display_mood) if display_mood else ''
 
     cat_counts = Counter(_mood_category(l) for l in all_labels)
     total_l = len(all_labels) or 1
@@ -275,8 +285,10 @@ def build_weekly_mood_payload(user: User, request=None) -> dict[str, Any]:
         'window_end': window_end.isoformat(),
         'days_in_window': (effective_end - window_start).days + 1,
         'entry_count': entry_count,
+        'has_graph_data': has_graph_data,
         'has_summary': has_summary,
-        'placeholder': None if has_summary else 'Not enough data yet',
+        'placeholder': None if has_graph_data else 'Unlock your phone to capture mood',
+        'latest_mood': latest_mood,
         'dominant_mood': dominant,
         'overall_mood': {
             'label': overall_label,

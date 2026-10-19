@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../services/feature_permission_service.dart';
 import '../services/screen_time_service.dart';
 import '../services/tracking_permission_prefs.dart';
 
@@ -98,7 +99,7 @@ class PermissionSetupPanelState extends State<PermissionSetupPanel>
   }
 
   Future<void> openScreenCapture() async {
-    await ScreenTimeService.instance.launchScreenCaptureConsent();
+    await FeaturePermissionService.openScreenRecordingSettings();
   }
 
   Future<void> openAccessibility() async {
@@ -106,7 +107,7 @@ class PermissionSetupPanelState extends State<PermissionSetupPanel>
   }
 
   Future<void> openOverlay() async {
-    await ScreenTimeService.instance.openManageOverlaySettings();
+    await FeaturePermissionService.openOverlaySettings();
   }
 
   Future<void> persistGrantSnapshot({bool markSetupDone = true}) async {
@@ -133,7 +134,7 @@ class PermissionSetupPanelState extends State<PermissionSetupPanel>
       ),
       PermissionRowData(
         title: 'Screen recording',
-        subtitle: 'Optional wellness clips — uses the system capture prompt',
+        subtitle: 'Opens system app settings to allow screen capture access',
         icon: Icons.screen_share_outlined,
         granted: screenCaptureOk,
         onEnable: openScreenCapture,

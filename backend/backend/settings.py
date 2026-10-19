@@ -93,6 +93,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'drf_spectacular',
     'rest_framework.authtoken',
     'corsheaders',
     'users',
@@ -146,6 +147,32 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'MindSync API',
+    'DESCRIPTION': (
+        'REST API for the MindSync mobile and web clients.\n\n'
+        '**Try APIs:** `POST /api/auth/login/` with JSON body, copy `access` from the response, '
+        'then click **Authorize** and enter: `Bearer <access>`'
+    ),
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SCHEMA_PATH_PREFIX': r'/api/',
+    'APPEND_COMPONENTS': {
+        'securitySchemes': {
+            'jwtAuth': {
+                'type': 'http',
+                'scheme': 'bearer',
+                'bearerFormat': 'JWT',
+            },
+        },
+    },
+    'SWAGGER_UI_SETTINGS': {
+        'persistAuthorization': True,
+    },
 }
 
 ROOT_URLCONF = 'backend.urls'
@@ -255,6 +282,12 @@ ADULT_DEPRESSION_MODEL_DIR = Path(
         str(BASE_DIR / "models" / "Adult depression detection" / "model"),
     )
 ).expanduser()
+
+# Depression MLP is trained on OpenFace AU CSV columns. Default: require OpenFace
+# (video → FeatureExtraction → CSV → predict_openface_csv). AU-proxy fallback is dev-only.
+ADULT_DEPRESSION_AU_PROXY_FALLBACK = os.environ.get(
+    "ADULT_DEPRESSION_AU_PROXY_FALLBACK", "false"
+).strip().lower() in {"1", "true", "yes"}
 
 # Legacy HF emotion weights (unused for mood scans; kept for optional tooling)
 EMOTION_MODEL_ID = os.environ.get("EMOTION_MODEL_ID", "dima806/facial_emotions_image_detection").strip()

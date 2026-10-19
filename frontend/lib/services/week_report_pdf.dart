@@ -1008,7 +1008,7 @@ class WeekReportPdfBuilder {
     final wellbeingScore = summary['wellbeing_score'];
     final wellnessIdx = summary['mental_wellness_index'];
     final stress = summary['stress'] as int?;
-    final anxiety = summary['anxiety'] as int?;
+    final emotion = (summary['emotion'] ?? '').toString().trim();
     final depression = summary['depression'] as int?;
     final moodStatus = (summary['mood_status'] ?? 'No data').toString();
     final rangeLabel = (range['label'] ?? 'Last 7 days').toString();
@@ -1204,9 +1204,25 @@ class WeekReportPdfBuilder {
                 pw.SizedBox(height: 12),
                 _pdfHeroBar('Stress', stress, _hex('#3B82F6')),
                 pw.SizedBox(height: 6),
-                _pdfHeroBar('Anxiety', anxiety, _hex('#14B8A6')),
-                pw.SizedBox(height: 6),
                 _pdfHeroBar('Depression', depression, _hex('#F59E0B')),
+                pw.SizedBox(height: 6),
+                pw.Row(
+                  children: [
+                    pw.Text(
+                      'Emotion',
+                      style: const pw.TextStyle(color: PdfColors.white, fontSize: 8),
+                    ),
+                    pw.Spacer(),
+                    pw.Text(
+                      emotion.isNotEmpty ? emotion : '—',
+                      style: pw.TextStyle(
+                        color: PdfColors.white,
+                        fontSize: 9,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
                 pw.SizedBox(height: 8),
                 pw.Text(
                   'MOOD: ${moodStatus.toUpperCase()}',
@@ -1246,7 +1262,7 @@ class WeekReportPdfBuilder {
             pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                sectionTitle('Mental State (7 Days)'),
+                sectionTitle('Daily Depression (7 Days)'),
                 _pdfMentalChart(dailyMental),
                 if (conditionLine.isNotEmpty) ...[
                   pw.SizedBox(height: 6),
@@ -1644,9 +1660,25 @@ class WeekReportPdfBuilder {
                 sectionTitle('Condition Levels'),
                 _pdfConditionBar('Stress', stress, _hex('#3B82F6')),
                 pw.SizedBox(height: 6),
-                _pdfConditionBar('Anxiety', anxiety, _hex('#14B8A6')),
-                pw.SizedBox(height: 6),
                 _pdfConditionBar('Depression', depression, _hex('#F59E0B')),
+                pw.SizedBox(height: 6),
+                pw.Row(
+                  children: [
+                    pw.Text(
+                      'Emotion',
+                      style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
+                    ),
+                    pw.Spacer(),
+                    pw.Text(
+                      emotion.isNotEmpty ? emotion : '—',
+                      style: pw.TextStyle(
+                        fontSize: 10,
+                        fontWeight: pw.FontWeight.bold,
+                        color: _hex('#9B8EC4'),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -1844,14 +1876,17 @@ class WeekReportPdfBuilder {
               (i) => {
                 'day_label': 'D${dailyMental.length + i + 1}',
                 'stress': null,
-                'anxiety': null,
+                'emotion': '',
                 'depression': null,
               },
             ),
           ];
 
     final hasData = days.any(
-      (d) => d['stress'] != null || d['anxiety'] != null || d['depression'] != null,
+      (d) =>
+          d['stress'] != null ||
+          d['depression'] != null ||
+          (d['emotion']?.toString().trim().isNotEmpty ?? false),
     );
     if (!hasData) {
       return pw.Text(
@@ -1865,10 +1900,6 @@ class WeekReportPdfBuilder {
       children: [
         pw.Row(
           children: [
-            _pdfLegendDot('Stress', _hex('#3B82F6')),
-            pw.SizedBox(width: 10),
-            _pdfLegendDot('Anxiety', _hex('#14B8A6')),
-            pw.SizedBox(width: 10),
             _pdfLegendDot('Depression', _hex('#F59E0B')),
           ],
         ),
@@ -1878,17 +1909,15 @@ class WeekReportPdfBuilder {
           columnWidths: {
             0: const pw.FlexColumnWidth(1.2),
             1: const pw.FlexColumnWidth(1),
-            2: const pw.FlexColumnWidth(1),
-            3: const pw.FlexColumnWidth(1),
+            2: const pw.FlexColumnWidth(1.4),
           },
           children: [
             pw.TableRow(
               decoration: pw.BoxDecoration(color: PdfColors.grey100),
               children: [
                 _cell('DAY', bold: true),
-                _cell('STRESS', bold: true),
-                _cell('ANXIETY', bold: true),
                 _cell('DEPR.', bold: true),
+                _cell('EMOTION', bold: true),
               ],
             ),
             ...days.map((d) {
@@ -1896,9 +1925,12 @@ class WeekReportPdfBuilder {
               return pw.TableRow(
                 children: [
                   _cell(day.isNotEmpty ? day : '—'),
-                  _cell(d['stress']?.toString() ?? '—'),
-                  _cell(d['anxiety']?.toString() ?? '—'),
                   _cell(d['depression']?.toString() ?? '—'),
+                  _cell(
+                    (d['emotion']?.toString().trim().isNotEmpty ?? false)
+                        ? d['emotion'].toString()
+                        : '—',
+                  ),
                 ],
               );
             }),

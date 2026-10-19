@@ -20,5 +20,6 @@ class BootReceiver : BroadcastReceiver() {
             AppBlockerService.start(app)
         }
         DnsFilterController.restoreIfNeeded(app)
+        BedtimeScheduleHelper.restoreFromPrefs(app)
     }
 }

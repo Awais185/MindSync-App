@@ -19,6 +19,10 @@ class ChatRequestSerializer(serializers.Serializer):
     session_id = serializers.IntegerField(required=False)
     history = ChatHistoryTurnSerializer(many=True, required=False, default=list)
     behavior_context = serializers.JSONField(required=False, allow_null=True)
+    tool = serializers.CharField(required=False, allow_blank=True, trim_whitespace=True, max_length=64)
+
+    def validate_tool(self, value: str) -> str:
+        return (value or '').strip()
 
     def validate_message(self, value: str) -> str:
         text = value.strip()

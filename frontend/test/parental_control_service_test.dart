@@ -32,6 +32,16 @@ void main() {
       expect(ParentalControlService.parseBlockedFlag(null), isFalse);
     });
 
+    test('resolveAppLabel keeps human name over package id from API', () {
+      final label = ParentalAppCatalog.resolveAppLabel(
+        packageName: 'com.zhiliaoapp.musically',
+        deviceLabel: 'TikTok',
+        apiLabel: 'com.zhiliaoapp.musically',
+        previousLabel: 'TikTok',
+      );
+      expect(label, 'TikTok');
+    });
+
     test('sortForDisplay prioritizes YouTube then games', () {
       final sorted = ParentalAppCatalog.sortForDisplay([
         const ParentalAppRule(

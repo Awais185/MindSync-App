@@ -139,6 +139,30 @@ class ApiClient {
     }
   }
 
+  Future<http.Response?> delete(
+    String path, {
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    var token = await _accessToken();
+    if (token == null || token.isEmpty) return null;
+
+    try {
+      var response = await http
+          .delete(ApiConfig.uri(path), headers: _jsonHeaders(token))
+          .timeout(timeout);
+      if (response.statusCode == 401 && await _auth.tryRefreshAccessToken()) {
+        token = await _accessToken();
+        if (token == null || token.isEmpty) return response;
+        response = await http
+            .delete(ApiConfig.uri(path), headers: _jsonHeaders(token))
+            .timeout(timeout);
+      }
+      return response;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<Map<String, dynamic>?> getJson(String path) async {
     final response = await get(path);
     if (response == null) return null;

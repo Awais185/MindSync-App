@@ -51,7 +51,7 @@ class SevenDayStudioReport {
         wellbeingScore: null,
         mentalWellnessIndex: null,
         stress: null,
-        anxiety: null,
+        emotion: '',
         depression: null,
         analysedVideoChunks: 0,
         screenOnMinutes: 0,
@@ -65,7 +65,7 @@ class SevenDayStudioReport {
           date: '',
           dayLabel: 'Day ${i + 1}',
           stress: null,
-          anxiety: null,
+          emotion: '',
           depression: null,
         ),
       ),
@@ -82,6 +82,8 @@ class SevenDayStudioReport {
         message: '',
         usageCategories: const [],
         recommendation: '',
+        recommendations: const [],
+        recommendationSections: const [],
       ),
       charts: StudioCharts(
         screenTimeVsMood: const [],
@@ -91,8 +93,10 @@ class SevenDayStudioReport {
       sleepQuality: StudioSleepQuality(
         score: null,
         status: 'No Data',
-        message: 'Uses phone use between 10 PM – 5 AM (local time, last 7 days) plus rough daytime load.',
+        message: 'Enable screen-time tracking to record sleep and late-night usage.',
         lateNightHours: 0,
+        trackedNights: 0,
+        daily: const [],
       ),
       riskSummary: StudioRiskSummary(
         hasRisk: false,
@@ -190,7 +194,7 @@ class SevenDayStudioReport {
           'wellbeing_score': summary.wellbeingScore,
           'mental_wellness_index': summary.mentalWellnessIndex,
           'stress': summary.stress,
-          'anxiety': summary.anxiety,
+          'emotion': summary.emotion,
           'depression': summary.depression,
           'analysed_video_chunks': summary.analysedVideoChunks,
           'screen_on_minutes': summary.screenOnMinutes,
@@ -213,7 +217,7 @@ class SevenDayStudioReport {
                 'date': d.date,
                 'day_label': d.dayLabel,
                 'stress': d.stress,
-                'anxiety': d.anxiety,
+                'emotion': d.emotion,
                 'depression': d.depression,
               },
             )
@@ -318,7 +322,7 @@ class StudioSummary {
     required this.wellbeingScore,
     required this.mentalWellnessIndex,
     required this.stress,
-    required this.anxiety,
+    required this.emotion,
     required this.depression,
     required this.analysedVideoChunks,
     required this.screenOnMinutes,
@@ -328,7 +332,7 @@ class StudioSummary {
   final int? wellbeingScore;
   final int? mentalWellnessIndex;
   final int? stress;
-  final int? anxiety;
+  final String emotion;
   final int? depression;
   final int analysedVideoChunks;
   final int screenOnMinutes;
@@ -338,7 +342,7 @@ class StudioSummary {
         wellbeingScore: _intOrNull(j['wellbeing_score']),
         mentalWellnessIndex: _intOrNull(j['mental_wellness_index']),
         stress: _intOrNull(j['stress']),
-        anxiety: _intOrNull(j['anxiety']),
+        emotion: (j['emotion'] ?? '').toString().trim(),
         depression: _intOrNull(j['depression']),
         analysedVideoChunks: _intOrNull(j['analysed_video_chunks']) ?? 0,
         screenOnMinutes: _intOrNull(j['screen_on_minutes']) ?? 0,
@@ -371,19 +375,19 @@ class StudioDailyMental {
     required this.date,
     required this.dayLabel,
     required this.stress,
-    required this.anxiety,
+    required this.emotion,
     required this.depression,
   });
   final String date;
   final String dayLabel;
   final int? stress;
-  final int? anxiety;
+  final String emotion;
   final int? depression;
   factory StudioDailyMental.fromJson(Map<String, dynamic> j) => StudioDailyMental(
         date: (j['date'] ?? '').toString(),
         dayLabel: (j['day_label'] ?? '').toString(),
         stress: _intOrNull(j['stress']),
-        anxiety: _intOrNull(j['anxiety']),
+        emotion: (j['emotion'] ?? '').toString().trim(),
         depression: _intOrNull(j['depression']),
       );
 }
@@ -454,11 +458,15 @@ class StudioWellbeing {
     required this.message,
     required this.usageCategories,
     required this.recommendation,
+    required this.recommendations,
+    required this.recommendationSections,
   });
   final int? score;
   final String message;
   final List<StudioUsageCategory> usageCategories;
   final String recommendation;
+  final List<String> recommendations;
+  final List<StudioRecommendationSection> recommendationSections;
   factory StudioWellbeing.fromJson(Map<String, dynamic> j) => StudioWellbeing(
         score: _intOrNull(j['score']),
         message: (j['message'] ?? '').toString(),
@@ -467,6 +475,28 @@ class StudioWellbeing {
             .map(StudioUsageCategory.fromJson)
             .toList(),
         recommendation: (j['recommendation'] ?? '').toString(),
+        recommendations: (j['recommendations'] as List<dynamic>? ?? [])
+            .map((e) => e.toString())
+            .where((s) => s.trim().isNotEmpty)
+            .toList(),
+        recommendationSections: (j['recommendation_sections'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(StudioRecommendationSection.fromJson)
+            .toList(),
+      );
+}
+
+class StudioRecommendationSection {
+  StudioRecommendationSection({required this.title, required this.bullets});
+  final String title;
+  final List<String> bullets;
+  factory StudioRecommendationSection.fromJson(Map<String, dynamic> j) =>
+      StudioRecommendationSection(
+        title: (j['title'] ?? 'Tips').toString(),
+        bullets: (j['bullets'] as List<dynamic>? ?? [])
+            .map((e) => e.toString())
+            .where((s) => s.trim().isNotEmpty)
+            .toList(),
       );
 }
 
@@ -492,22 +522,50 @@ class StudioCharts {
       );
 }
 
+class StudioSleepDay {
+  StudioSleepDay({
+    required this.date,
+    required this.sleepHours,
+    required this.tracked,
+    required this.lateNightHours,
+  });
+  final String date;
+  final double sleepHours;
+  final bool tracked;
+  final double lateNightHours;
+  factory StudioSleepDay.fromJson(Map<String, dynamic> j) => StudioSleepDay(
+        date: (j['date'] ?? '').toString(),
+        sleepHours: (j['sleep_hours'] as num?)?.toDouble() ?? 0,
+        tracked: j['sleep_tracked'] == true,
+        lateNightHours: (j['late_night_hours'] as num?)?.toDouble() ?? 0,
+      );
+}
+
 class StudioSleepQuality {
   StudioSleepQuality({
     required this.score,
     required this.status,
     required this.message,
     required this.lateNightHours,
+    required this.trackedNights,
+    required this.daily,
   });
   final int? score;
   final String status;
   final String message;
   final double lateNightHours;
+  final int trackedNights;
+  final List<StudioSleepDay> daily;
   factory StudioSleepQuality.fromJson(Map<String, dynamic> j) => StudioSleepQuality(
         score: _intOrNull(j['score']),
         status: (j['status'] ?? 'No Data').toString(),
         message: (j['message'] ?? '').toString(),
         lateNightHours: (j['late_night_hours'] as num?)?.toDouble() ?? 0,
+        trackedNights: _intOrNull(j['tracked_nights']) ?? 0,
+        daily: (j['daily'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(StudioSleepDay.fromJson)
+            .toList(),
       );
 }
 

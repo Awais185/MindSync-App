@@ -18,7 +18,7 @@ object BlockEnforcementHelper {
         val out = HashSet<String>()
         out.addAll(TrackerPrefs.effectiveBlockedPackages(context))
         if (TrackerPrefs.isSocialLimitLockActive(context)) {
-            out.addAll(MonitoredAppsCache.getPackages(context))
+            out.addAll(TrackedSocialApps.usageHealthLimitPackages(context))
         }
         return out
     }

@@ -6,8 +6,10 @@ from django.db.models import Q
 from rest_framework import parsers, permissions, response, status, views
 
 from .facial_expression_service import (
+    BACKGROUND_SOURCE_TYPES,
     process_facial_expression_capture_sync,
     process_random_incomplete_batch,
+    reset_stale_processing_captures,
     submit_facial_expression_processing,
 )
 from .identity import face_match_score_from_video_path
@@ -25,8 +27,8 @@ def _serialize_capture(row: FacialExpressionCapture) -> dict:
         "status": row.status,
         "processing_error": row.processing_error,
         "stress_score": row.stress_score,
-        "anxiety_score": row.anxiety_score,
         "depression_score": row.depression_score,
+        "emotion": row.emotion,
         "dominant_state": row.dominant_state,
         "active_aus": row.active_aus or [],
         "au_results": row.au_results,
@@ -192,6 +194,23 @@ class FacialExpressionUploadView(views.APIView):
         allowed = {c[0] for c in FacialExpressionCapture.SOURCE_CHOICES}
         if source_type not in allowed:
             source_type = FacialExpressionCapture.SOURCE_VIDEO_WATCH
+        recording_type = (request.data.get("recording_type") or "face_camera").strip()[:32]
+        if (
+            source_type == FacialExpressionCapture.SOURCE_MANUAL
+            or recording_type in {"manual_scan", "face_scan", "user_session"}
+        ):
+            return response.Response(
+                {
+                    "error": "manual_scan_not_persisted",
+                    "message": (
+                        "Manual face scans are preview-only. Background scheduled "
+                        "captures are saved automatically."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if source_type not in BACKGROUND_SOURCE_TYPES:
+            source_type = FacialExpressionCapture.SOURCE_VIDEO_WATCH
 
         try:
             duration_seconds = int(request.data.get("duration_seconds") or 20)
@@ -220,7 +239,6 @@ class FacialExpressionUploadView(views.APIView):
             "true",
             "yes",
         }
-        recording_type = (request.data.get("recording_type") or "face_camera").strip()[:32]
         # Facial Expression Detection uploads must never trigger Face Mood Scan.
         if recording_type == "facial_expression_detection":
             run_mood_scan = False
@@ -379,15 +397,15 @@ class FacialExpressionRecoverView(views.APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request):
-        if not request.user.is_staff:
-            return response.Response({"error": "staff_only"}, status=status.HTTP_403_FORBIDDEN)
         try:
             limit = int(request.data.get("limit") or 5)
         except (TypeError, ValueError):
             limit = 5
+        limit = max(1, min(limit, 15 if request.user.is_staff else 5))
         random_order = str(request.data.get("random", "true")).lower() not in {"0", "false", "no"}
+        reset_stale_processing_captures()
         processed = process_random_incomplete_batch(limit=limit, random_order=random_order)
-        return response.Response({"ok": True, "processed": processed})
+        return response.Response({"ok": True, "processed": processed, "reset_stale": True})
 
 
 class FacialExpressionReprocessView(views.APIView):

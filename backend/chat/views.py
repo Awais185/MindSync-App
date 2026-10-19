@@ -45,64 +45,25 @@ from .serializers import (
     UserMentalStateSerializer,
 )
 from .safety import CRISIS_REPLY, is_crisis_message
+from .mcp.guardrails import (
+    MINDSYNC_BRAIN_CONTROL_PROMPT,
+    OFF_TOPIC_REDIRECT_REPLY,
+    is_likely_off_topic,
+)
+from .mcp.router import (
+    TOOL_SEVEN_DAY_REPORT,
+    resolve_requested_tool,
+    run_chat_tool,
+)
+from .mcp.server import get_mindsync_mcp
+from .sanitize import sanitize_chat_reply
 from subscriptions.permissions import require_subscription_feature
 from subscriptions.services import SubscriptionService
 
-MINDSYNC_SYSTEM_PROMPT = """
-You are MindSync AI, an intelligent and compassionate digital psychologist.
+# Ensure FastMCP tool registry is initialized when Django loads chat views.
+get_mindsync_mcp()
 
-Your purpose is to analyze the user's emotional and physical well-being based on their message and behavior patterns.
-
-Core Responsibilities:
-- Detect emotional states such as stress, anxiety, sadness, frustration, or mental fatigue
-- Identify possible physical symptoms related to digital lifestyle (e.g., headache, eye strain, sleep issues)
-- Consider the possibility of excessive screen time or mobile usage as a contributing factor
-- Suggest healthy habits including rest and light physical activity when appropriate
-- Provide supportive, practical, and safe advice
-
-Empathy Style Rules:
-- Do NOT start responses with "I'm sorry to hear that"
-- Avoid over-apologizing language
-- Instead, acknowledge naturally like:
-  - "I understand how you're feeling"
-  - "It sounds like you're experiencing..."
-  - "I can see that this is affecting you"
-- Avoid alarming the user
-
-Smart Analysis Requirement:
-If user symptoms include:
-- Headache
-- Eye pain / strain
-- Tiredness / fatigue
-- Irritation or lack of focus
-
-Then gently suggest:
-- It might be related to prolonged mobile or screen usage
-- Recommend reducing screen time, taking breaks, or resting eyes
-
-Response Structure:
-1. Acknowledge the user's feelings or symptoms
-2. Provide a brief emotional and behavioral analysis
-3. Mention possible causes (including screen time if relevant)
-4. Suggest practical coping strategies:
-   - Eye rest (20-20-20 rule)
-   - Break from screen
-   - Hydration
-   - Relaxation techniques
-5. Provide gentle mental health support
-6. Ask a soft follow-up question
-
-Tone:
-- Human-like
-- Supportive and reassuring
-- Clear and simple
-
-Safety:
-- If signs of severe stress or anxiety appear, suggest seeking professional help politely
-
-Goal:
-Help the user feel understood, supported, and guided toward healthier digital and mental habits.
-""".strip()
+MINDSYNC_SYSTEM_PROMPT = MINDSYNC_BRAIN_CONTROL_PROMPT
 
 
 def _fallback_supportive_reply(user_message: str, history_items) -> str:
@@ -148,10 +109,12 @@ def _postprocess_reply(raw: str) -> str:
     text = re.sub(r"^\s*Assistant:\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
-    # Keep concise and avoid questionnaire-like responses.
+    # Keep concise for short chat; preserve structured Markdown reports.
+    is_structured = '##' in text or text.lstrip().startswith('#')
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if len(lines) > 6:
-        lines = lines[:6]
+    max_lines = 48 if is_structured else 6
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
     text = "\n".join(lines).strip()
 
     # At most one question in the final output.
@@ -517,9 +480,11 @@ class ChatAPIView(APIView):
         user_message = ser.validated_data['message']
         history = ser.validated_data.get('history', [])
         session_id = ser.validated_data.get('session_id')
+        explicit_tool = ser.validated_data.get('tool') or ''
         client_behavior = parse_client_behavior_payload(
             ser.validated_data.get('behavior_context'),
         )
+        tool_name = resolve_requested_tool(user_message, explicit_tool or None)
 
         UserMentalState.objects.get_or_create(user=request.user)
         try:
@@ -556,6 +521,23 @@ class ChatAPIView(APIView):
 
         if is_crisis_message(user_message):
             reply = CRISIS_REPLY
+            tool_name = None
+        elif tool_name:
+            try:
+                reply = run_chat_tool(
+                    tool_name,
+                    user=request.user,
+                    message=user_message,
+                    client_behavior=client_behavior,
+                )
+            except Exception:
+                logger.exception('FastMCP chat tool %s failed', tool_name)
+                reply = (
+                    'I could not build your wellness report right now. '
+                    'Please try again in a moment.'
+                )
+        elif is_likely_off_topic(user_message):
+            reply = OFF_TOPIC_REDIRECT_REPLY
         elif os.environ.get('GEMINI_USE_FALLBACK', '').strip().lower() in {
             '1',
             'true',
@@ -597,6 +579,8 @@ class ChatAPIView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
+        reply = sanitize_chat_reply(reply)
+
         ChatMessage.objects.create(
             user=request.user,
             session=session,
@@ -604,14 +588,22 @@ class ChatAPIView(APIView):
             response=reply,
         )
 
+        chart_message = user_message
+        if tool_name == TOOL_SEVEN_DAY_REPORT:
+            chart_message = f'{user_message} report screen time weekly'
         charts = build_chat_charts(
             request.user,
             client_behavior,
-            user_message=user_message,
+            user_message=chart_message,
         )
 
         return Response(
-            {'reply': reply, 'session_id': session.id, 'charts': charts},
+            {
+                'reply': reply,
+                'session_id': session.id,
+                'charts': charts,
+                'tool_invoked': tool_name,
+            },
             status=status.HTTP_200_OK,
         )
 

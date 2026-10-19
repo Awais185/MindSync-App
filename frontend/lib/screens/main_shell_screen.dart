@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../ui/components/mindsync_app_header.dart';
 import 'tabs/analytics_screen.dart';
 import 'tabs/chat_screen.dart';
+import '../screens/pages/report_screen.dart';
 import 'tabs/home_screen.dart';
 import 'tabs/more_screen.dart';
 import 'tabs/parent_screen.dart';
@@ -72,6 +73,15 @@ class _MainShellScreenState extends State<MainShellScreen> {
             child: Padding(
               padding: const EdgeInsets.only(right: 12, bottom: 2),
               child: MindSyncAppHeader(
+                onReportTap: selectedTab == 3
+                    ? () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const ReportScreen(),
+                          ),
+                        );
+                      }
+                    : null,
                 onMenuTap: selectedTab == 3
                     ? () => _chatKey.currentState?.openDrawer()
                     : null,

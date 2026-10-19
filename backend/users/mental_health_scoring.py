@@ -1,4 +1,4 @@
-"""Per-user stress / anxiety / depression scores from facial + video chunk tables."""
+"""Per-user stress / depression scores from facial + video chunk tables."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ HIGH_RISK_APPS = frozenset(
     {"tiktok", "instagram", "youtube", "snapchat"},
 )
 
-_EMOTIONS = ("stress", "anxiety", "depression")
 MIN_EXPRESSIONS_REQUIRED = 5
 
 
@@ -101,29 +100,42 @@ def _scores_for_facial_qs(facial_qs):
     return completed if completed else rows
 
 
-def compute_mental_health_scores(user) -> dict:
+def compute_mental_health_scores(user, *, window_days: int | None = None) -> dict:
     from face_detection.models import FacialExpressionCapture
     from users.models import VideoChunkAnalysis
 
-    facial_qs = (
-        FacialExpressionCapture.objects.filter(user=user)
-        .order_by("-created_at")[:50]
-    )
-    facial_rows = _scores_for_facial_qs(facial_qs)
+    window_days = int(window_days) if window_days is not None else None
+    if window_days is not None:
+        window_days = max(1, min(window_days, 30))
+
+    facial_qs = FacialExpressionCapture.objects.filter(user=user).order_by("-created_at")
+    if window_days is not None:
+        cutoff = timezone.now() - timedelta(days=window_days)
+        facial_qs = facial_qs.filter(created_at__gte=cutoff)
+    facial_rows = _scores_for_facial_qs(facial_qs[:50])
     expression_count = _completed_expression_count(user)
 
-    video_rows = list(
-        VideoChunkAnalysis.objects.filter(user=user).order_by("-created_at")[:100]
-    )
+    video_qs = VideoChunkAnalysis.objects.filter(user=user).order_by("-created_at")
+    if window_days is not None:
+        cutoff = timezone.now() - timedelta(days=window_days)
+        video_qs = video_qs.filter(created_at__gte=cutoff)
+    video_rows = list(video_qs[:100])
 
-    has_data = expression_count >= MIN_EXPRESSIONS_REQUIRED
+    openface_window = None
+    if window_days is not None:
+        from users.openface_home_metrics import openface_capture_averages
+
+        openface_window = openface_capture_averages(user, window_days=window_days)
+
+    has_data = expression_count >= MIN_EXPRESSIONS_REQUIRED or bool(
+        openface_window and openface_window.get("capture_count", 0) > 0
+    )
     if not has_data:
         return {
             "has_data": False,
             "expression_count": expression_count,
             "min_expressions_required": MIN_EXPRESSIONS_REQUIRED,
             "stress": {"score": 0.0, "trend": "flat"},
-            "anxiety": {"score": 0.0, "trend": "flat"},
             "depression": {"score": 0.0, "trend": "flat"},
             "overall": {"score": 0.0, "level": "Normal", "color": "#43A047"},
             "last_updated": None,
@@ -133,14 +145,18 @@ def compute_mental_health_scores(user) -> dict:
     behavioral = _behavioral_score(video_rows)
 
     facial_stress = _facial_emotion_score(facial_rows, "stress", "stress_score")
-    facial_anxiety = _facial_emotion_score(facial_rows, "anxiety", "anxiety_score")
     facial_depression = _facial_emotion_score(facial_rows, "depression", "depression_score")
 
     final_stress = _round1(facial_stress * 0.6 + behavioral * 0.4)
-    final_anxiety = _round1(facial_anxiety * 0.6 + behavioral * 0.4)
     final_depression = _round1(facial_depression * 0.6 + behavioral * 0.4)
 
-    overall = _round1((final_stress + final_anxiety + final_depression) / 3.0)
+    openface_count = 0
+    if openface_window and openface_window.get("capture_count", 0) > 0:
+        openface_count = int(openface_window["capture_count"])
+        final_stress = float(openface_window["stress"])
+        final_depression = float(openface_window["depression"])
+
+    overall = _round1((final_stress + final_depression) / 2.0)
     level, color = _overall_level(overall)
 
     last_updated = None
@@ -157,9 +173,6 @@ def compute_mental_health_scores(user) -> dict:
     week_stress = _round1(
         _facial_emotion_score(facial_week, "stress", "stress_score") * 0.6 + b_behavioral * 0.4
     ) if facial_week else final_stress
-    week_anxiety = _round1(
-        _facial_emotion_score(facial_week, "anxiety", "anxiety_score") * 0.6 + b_behavioral * 0.4
-    ) if facial_week else final_anxiety
     week_depression = _round1(
         _facial_emotion_score(facial_week, "depression", "depression_score") * 0.6 + b_behavioral * 0.4
     ) if facial_week else final_depression
@@ -169,18 +182,17 @@ def compute_mental_health_scores(user) -> dict:
         "expression_count": expression_count,
         "min_expressions_required": MIN_EXPRESSIONS_REQUIRED,
         "stress": {"score": final_stress, "trend": _trend(final_stress, week_stress)},
-        "anxiety": {"score": final_anxiety, "trend": _trend(final_anxiety, week_anxiety)},
         "depression": {"score": final_depression, "trend": _trend(final_depression, week_depression)},
         "overall": {"score": overall, "level": level, "color": color},
         "last_updated": last_updated.isoformat() if last_updated else None,
         "behavioral_score": behavioral,
+        "openface_capture_count": openface_count,
     }
 
     logger.info(
-        "Mental health score computed for user:%s stress:%s anxiety:%s depression:%s",
+        "Mental health score computed for user:%s stress:%s depression:%s",
         user.id,
         final_stress,
-        final_anxiety,
         final_depression,
     )
     return result

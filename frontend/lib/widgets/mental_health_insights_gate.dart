@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../services/plan_access_service.dart';
@@ -37,10 +38,14 @@ class MentalHealthInsightsGate extends StatefulWidget {
   const MentalHealthInsightsGate({
     super.key,
     required this.builder,
+    this.dashboardListenable,
   });
 
   final Widget Function(BuildContext context, MentalHealthInsightsAccess access)
       builder;
+
+  /// Defaults to [WellnessDashboardService.instance.dashboard] (7-day report window).
+  final ValueListenable<WellnessDashboardData>? dashboardListenable;
 
   @override
   State<MentalHealthInsightsGate> createState() =>
@@ -88,8 +93,10 @@ class _MentalHealthInsightsGateState extends State<MentalHealthInsightsGate> {
 
   @override
   Widget build(BuildContext context) {
+    final listenable = widget.dashboardListenable ??
+        WellnessDashboardService.instance.dashboard;
     return ValueListenableBuilder<WellnessDashboardData>(
-      valueListenable: WellnessDashboardService.instance.dashboard,
+      valueListenable: listenable,
       builder: (context, dashboard, _) {
         return widget.builder(context, _access(dashboard));
       },

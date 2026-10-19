@@ -29,6 +29,7 @@ object UsageLimitEnforcer {
         val usedSeconds = todayMonitoredSocialSeconds(appCtx)
         val limitSeconds = limitMinutes * 60
         if (usedSeconds >= limitSeconds && !TrackerPrefs.isSocialLimitLockActive(appCtx)) {
+            TrackerPrefs.setParentalEnforcementEnabled(appCtx, true)
             TrackerPrefs.setSocialLimitLock(appCtx)
             UsageLimitExpiryWorker.schedule(appCtx)
             showLimitReachedNotification(appCtx)

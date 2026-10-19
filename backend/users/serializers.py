@@ -14,9 +14,6 @@ from .models import (
     UserProfile,
     AppUsage,
     CommunityPost,
-    DoctorProfile,
-    DoctorChatMessage,
-    TrustedContact,
     CommunityPostLike,
     CommunityPostComment,
     AppBranding,
@@ -569,39 +566,6 @@ class CommunityPostCommentSerializer(serializers.ModelSerializer):
         last = obj.user.last_name.strip()
         full = f'{first} {last}'.strip()
         return full or obj.user.username
-
-
-class DoctorProfileSerializer(serializers.ModelSerializer):
-    account_email = serializers.EmailField(source='account.email', read_only=True)
-
-    class Meta:
-        model = DoctorProfile
-        fields = (
-            'id',
-            'account_email',
-            'full_name',
-            'designation',
-            'experience_years',
-            'specialist',
-            'contact_number',
-            'is_active',
-        )
-
-
-class DoctorChatMessageSerializer(serializers.ModelSerializer):
-    doctor_name = serializers.CharField(source='doctor.full_name', read_only=True)
-
-    class Meta:
-        model = DoctorChatMessage
-        fields = ('id', 'doctor', 'doctor_name', 'sender', 'message', 'created_at')
-        read_only_fields = ('id', 'doctor_name', 'created_at')
-
-
-class TrustedContactSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = TrustedContact
-        fields = ('id', 'name', 'relationship', 'contact_number')
-        read_only_fields = ('id',)
 
 
 class AppBrandingSerializer(serializers.ModelSerializer):

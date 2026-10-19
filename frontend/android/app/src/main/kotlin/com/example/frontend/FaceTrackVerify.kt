@@ -119,6 +119,17 @@ object FaceTrackVerify {
             val json = runCatching { JSONObject(body) }.getOrNull()
             val matched =
                 json?.optBoolean("matched", json?.optBoolean("match", false) ?: false) == true
+            if (matched) {
+                val moodSaved = json?.optBoolean("mood_saved", false) == true
+                val moodMsg = json?.optString("mood_message", "") ?: ""
+                if (moodSaved) {
+                    Log.i("FaceTrackVerify", "Mood scan saved: $moodMsg")
+                } else if (json?.optBoolean("mood_skipped", false) == true) {
+                    Log.i("FaceTrackVerify", "Mood scan skipped: $moodMsg")
+                } else if (matched) {
+                    Log.w("FaceTrackVerify", "Face matched but mood not saved")
+                }
+            }
             if (matched && applyMatchPause) {
                 TrackerPrefs.applyFaceMatchPause(context)
             }

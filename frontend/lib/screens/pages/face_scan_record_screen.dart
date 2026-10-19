@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../services/behavior_analysis_warmup.dart';
 
@@ -22,6 +23,9 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
   CameraController? _controller;
   bool _initializing = true;
   bool _recording = false;
+  /// True after [CameraController.startVideoRecording] succeeds (do not rely on
+  /// [CameraValue.isRecordingVideo] alone — it can lag on Android).
+  bool _captureSessionActive = false;
   bool _stopInProgress = false;
   int _elapsed = 0;
   Timer? _timer;
@@ -36,16 +40,30 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
 
   Future<void> _initCamera() async {
     try {
+      if (!kIsWeb) {
+        var status = await Permission.camera.status;
+        if (!status.isGranted) {
+          status = await Permission.camera.request();
+        }
+        if (!status.isGranted) {
+          if (!mounted) return;
+          setState(() {
+            _error = 'Camera permission is required to record your face video.';
+            _initializing = false;
+          });
+          return;
+        }
+      }
       final cams = await availableCameras();
       final front = cams.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => cams.first,
       );
+      // Do not set imageFormatGroup for video — YUV420 breaks recording on many Android devices.
       final controller = CameraController(
         front,
         ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.yuv420,
       );
       await controller.initialize();
       if (!mounted) return;
@@ -71,11 +89,12 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
     if (kIsWeb) return true;
     try {
       final f = File(file.path);
-      for (var i = 0; i < 25; i++) {
-        if (await f.length() >= 24_000) return true;
-        await Future<void>.delayed(const Duration(milliseconds: 200));
+      for (var i = 0; i < 40; i++) {
+        final len = await f.length();
+        if (len >= 8_000) return true;
+        await Future<void>.delayed(const Duration(milliseconds: 150));
       }
-      return await f.length() >= 12_000;
+      return await f.length() >= 4_000;
     } catch (_) {
       return true;
     }
@@ -91,6 +110,7 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
     }
     try {
       await c.startVideoRecording();
+      _captureSessionActive = true;
       if (!mounted) return;
       _cancelRecordingTimer();
       setState(() {
@@ -109,6 +129,7 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
         }
       });
     } catch (e) {
+      _captureSessionActive = false;
       _cancelRecordingTimer();
       if (!mounted) return;
       setState(() => _recording = false);
@@ -135,21 +156,35 @@ class _FaceScanRecordScreenState extends State<FaceScanRecordScreen> {
     }
 
     try {
-      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await Future<void>.delayed(const Duration(milliseconds: 200));
       XFile? file;
-      if (c.value.isRecordingVideo || c.value.isRecordingPaused) {
-        file = await c.stopVideoRecording();
+      if (_captureSessionActive) {
+        file = await c.stopVideoRecording().timeout(
+          const Duration(seconds: 20),
+          onTimeout: () {
+            throw TimeoutException('stopVideoRecording');
+          },
+        );
+        _captureSessionActive = false;
+      } else if (c.value.isRecordingVideo || c.value.isRecordingPaused) {
+        file = await c.stopVideoRecording().timeout(
+          const Duration(seconds: 20),
+        );
       }
       if (!mounted) return;
       if (file != null && await _waitForFileReady(file)) {
         Navigator.of(context).pop(file);
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Recording did not save. Try again.'),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Recording did not save. Record at least 2–3 seconds, then tap stop.',
+            ),
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

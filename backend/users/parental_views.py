@@ -36,6 +36,26 @@ def _expand_blocked_aliases(package_name: str) -> set[str]:
     return out
 
 
+def _humanize_label(package_name: str, label: str) -> str:
+    pkg = (package_name or '').strip()
+    lab = (label or '').strip()
+    if not lab or lab == pkg or ('.' in lab and lab.count('.') >= 2):
+        return ''
+    return lab
+
+
+def _alias_group_label(package_name: str, labels: dict[str, str]) -> str:
+    pkg = (package_name or '').strip()
+    for group in BLOCKED_PACKAGE_ALIAS_GROUPS:
+        if pkg not in group:
+            continue
+        for other in group:
+            human = _humanize_label(other, labels.get(other, ''))
+            if human:
+                return human
+    return ''
+
+
 def _merge_apps_for_user(user: User):
     """Union of reported apps and blocked rows with labels + blocked flags + dynamic categories."""
     reported = {r.package_name: r.app_label or r.package_name for r in ChildReportedApp.objects.filter(child_user=user)}
@@ -46,6 +66,10 @@ def _merge_apps_for_user(user: User):
     all_pkgs = set(reported.keys()) | set(blocked.keys())
     for pkg in sorted(all_pkgs):
         lab = labels.get(pkg, pkg)
+        if not _humanize_label(pkg, lab):
+            shared = _alias_group_label(pkg, labels)
+            if shared:
+                lab = shared
         is_blocked = blocked.get(pkg, False)
         
         # Simple auto-categorization based on package name heuristics
@@ -115,20 +139,33 @@ class ParentBlockedAppUpdateAPIView(APIView):
         user = request.user
         pkg = ser.validated_data['package_name'].strip()
         blocked = ser.validated_data['blocked']
+        app_label = (ser.validated_data.get('app_label') or '').strip()
         alias_pkgs = sorted(_expand_blocked_aliases(pkg))
+        if not alias_pkgs:
+            return Response(
+                {'package_name': ['Invalid package name.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        obj = None
         with transaction.atomic():
+            if app_label:
+                for alias_pkg in alias_pkgs:
+                    ChildReportedApp.objects.update_or_create(
+                        child_user=user,
+                        package_name=alias_pkg,
+                        defaults={'app_label': app_label},
+                    )
             for alias_pkg in alias_pkgs:
-                BlockedAppPackage.objects.update_or_create(
+                obj, _ = BlockedAppPackage.objects.update_or_create(
                     child_user=user,
                     package_name=alias_pkg,
                     defaults={'blocked': blocked},
                 )
-            obj = BlockedAppPackage.objects.get(child_user=user, package_name=pkg)
         return Response(
             {
-                'package_name': obj.package_name,
-                'blocked': obj.blocked,
-                'updated_at': obj.updated_at.isoformat(),
+                'package_name': obj.package_name if obj else pkg,
+                'blocked': blocked,
+                'updated_at': obj.updated_at.isoformat() if obj else '',
             },
             status=status.HTTP_200_OK,
         )

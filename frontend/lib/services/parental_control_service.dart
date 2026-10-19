@@ -96,6 +96,42 @@ abstract final class ParentalAppCatalog {
     return 999;
   }
 
+  /// Keeps the on-device display name when the API returns a raw package id.
+  static String resolveAppLabel({
+    required String packageName,
+    required String deviceLabel,
+    String? apiLabel,
+    String? previousLabel,
+  }) {
+    final pkg = packageName.trim();
+    final device = deviceLabel.trim();
+    final api = (apiLabel ?? '').trim();
+    final previous = (previousLabel ?? '').trim();
+
+    bool looksLikePackageId(String value) {
+      if (value.isEmpty || value == pkg) return true;
+      return value.contains('.') && value.split('.').length >= 3;
+    }
+
+    if (previous.isNotEmpty && !looksLikePackageId(previous)) {
+      return previous;
+    }
+    if (device.isNotEmpty && !looksLikePackageId(device)) {
+      return device;
+    }
+    if (api.isNotEmpty && !looksLikePackageId(api)) {
+      return api;
+    }
+    for (final entry in priorityApps) {
+      if (entry.$2.any((id) => id.toLowerCase() == pkg.toLowerCase())) {
+        return entry.$1;
+      }
+    }
+    if (device.isNotEmpty) return device;
+    if (api.isNotEmpty) return api;
+    return pkg;
+  }
+
   static List<ParentalAppRule> sortForDisplay(List<ParentalAppRule> rules) {
     final list = List<ParentalAppRule>.from(rules);
     list.sort((a, b) {
@@ -171,6 +207,7 @@ class ParentalControlService {
     if (apiRule != null) {
       return parseBlockedFlag(apiRule.blocked);
     }
+    // Offline / not yet synced: only explicit local blocks (default = unblocked).
     final aliases = _expandBlockedAliases(packageName);
     if (aliases.any(prefsBlocked.contains)) return true;
     if (aliases.any(nativeBlocked.contains)) return true;
@@ -329,7 +366,9 @@ class ParentalControlService {
   }
 
   /// Sync device inventory to backend, merge with API + local block state.
-  Future<List<ParentalAppRule>> fetchRules() async {
+  Future<List<ParentalAppRule>> fetchRules({
+    Map<String, String> preserveLabelsByPackage = const {},
+  }) async {
     final deviceApps = await fetchInstalledAppsFromDevice();
     await syncInstalledApps(deviceApps: deviceApps);
 
@@ -352,7 +391,12 @@ class ParentalControlService {
       );
       byPackage[app.packageName] = ParentalAppRule(
         packageName: app.packageName,
-        appLabel: existing?.appLabel ?? app.appLabel,
+        appLabel: ParentalAppCatalog.resolveAppLabel(
+          packageName: app.packageName,
+          deviceLabel: app.appLabel,
+          apiLabel: existing?.appLabel,
+          previousLabel: preserveLabelsByPackage[app.packageName],
+        ),
         blocked: blocked,
         category: existing?.category ?? (app.isGame ? 'Games' : null),
         iconBytes: app.iconBytes,
@@ -379,14 +423,25 @@ class ParentalControlService {
   Future<bool> setBlocked({
     required String packageName,
     required bool blocked,
+    String? appLabel,
   }) async {
+    final label = (appLabel ?? '').trim();
     final response = await ApiClient.instance.put(
       '/api/auth/parent/blocked-apps/update/',
-      body: {'package_name': packageName, 'blocked': blocked},
+      body: {
+        'package_name': packageName,
+        'blocked': blocked,
+        if (label.isNotEmpty) 'app_label': label,
+      },
     );
     if (response == null) return false;
     final ok = response.statusCode >= 200 && response.statusCode < 300;
-    if (!ok) return false;
+    if (!ok) {
+      debugPrint(
+        'setBlocked failed HTTP ${response.statusCode}: ${response.body}',
+      );
+      return false;
+    }
 
     final existing = await _readBlocked();
     final aliases = _expandBlockedAliases(packageName);
@@ -398,15 +453,22 @@ class ParentalControlService {
     await _persistBlocked(existing);
 
     if (!kIsWeb) {
-      try {
-        await _channel.invokeMethod('setBlockedAppNow', {
-          'packageName': packageName,
-          'blocked': blocked,
-        });
-      } catch (_) {
-        // Backend state already saved; native sync will retry via poller.
-      }
       await syncNativeHomeBlocker(existing);
+      try {
+        for (final alias in aliases) {
+          await _channel.invokeMethod('setBlockedAppNow', {
+            'packageName': alias,
+            'blocked': blocked,
+          });
+        }
+      } catch (_) {
+        // Backend + home blocker list already saved.
+      }
+      if (blocked && existing.isNotEmpty) {
+        try {
+          await _channel.invokeMethod('ensureParentalEnforcementEnabled');
+        } catch (_) {}
+      }
     }
     return true;
   }

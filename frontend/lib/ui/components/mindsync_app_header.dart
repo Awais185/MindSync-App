@@ -12,10 +12,13 @@ class MindSyncAppHeader extends StatefulWidget {
   const MindSyncAppHeader({
     super.key,
     this.onBack,
+    this.onReportTap,
     this.onMenuTap,
   });
 
   final VoidCallback? onBack;
+  /// Chat tab: opens the 7-day Report screen (left of history menu).
+  final VoidCallback? onReportTap;
   final VoidCallback? onMenuTap;
 
   static const double avatarRadius = 20;
@@ -25,6 +28,9 @@ class MindSyncAppHeader extends StatefulWidget {
 
   /// Top spacing of the whole header — unchanged
   static const double headerTopSpacing = 3;
+  /// Extra inset for the logo from the screen edge.
+  static const double headerLeftSpacing = 12;
+
 
   @override
   State<MindSyncAppHeader> createState() => _MindSyncAppHeaderState();
@@ -105,24 +111,32 @@ class _MindSyncAppHeaderState extends State<MindSyncAppHeader> {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 3, left: 3),
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
+                  padding: EdgeInsets.only(
+                    top: 3,
+                    left: MindSyncAppHeader.headerLeftSpacing,
+                  ),
+                  child: MindSyncLogo(
+                    height: MindSyncAppHeader.logoHeight,
+                    width: logoWidth,
+                    fit: BoxFit.contain,
                     alignment: Alignment.centerLeft,
-                    child: MindSyncLogo(
-                      height: MindSyncAppHeader.logoHeight,
-                      width: logoWidth,
-                      fit: BoxFit.contain,
-                      alignment: Alignment.centerLeft,
-                    ),
                   ),
                 ),
               ),
             ),
 
+            if (widget.onReportTap != null) ...[
+              _HeaderCircleIconButton(
+                icon: Icons.assessment_outlined,
+                tooltip: 'My Report',
+                onTap: widget.onReportTap!,
+              ),
+              const SizedBox(width: 6),
+            ],
             if (widget.onMenuTap != null) ...[
               _HeaderCircleIconButton(
                 icon: Icons.menu_rounded,
+                tooltip: 'Chat history',
                 onTap: widget.onMenuTap!,
               ),
               const SizedBox(width: 6),
@@ -178,15 +192,17 @@ class _HeaderCircleIconButton extends StatelessWidget {
     required this.icon,
     required this.onTap,
     this.badgeCount = 0,
+    this.tooltip,
   });
 
   final IconData icon;
   final VoidCallback onTap;
   final int badgeCount;
+  final String? tooltip;
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
+    final button = InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(22),
       child: Stack(
@@ -235,5 +251,9 @@ class _HeaderCircleIconButton extends StatelessWidget {
         ],
       ),
     );
+    if (tooltip != null && tooltip!.isNotEmpty) {
+      return Tooltip(message: tooltip!, preferBelow: true, child: button);
+    }
+    return button;
   }
 }

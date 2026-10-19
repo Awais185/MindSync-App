@@ -118,11 +118,24 @@ abstract final class FeaturePermissionService {
     if (await ScreenTimeService.instance.hasScreenCapturePermission()) {
       return true;
     }
-    await ScreenTimeService.instance.launchScreenCaptureConsent();
-    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await ScreenTimeService.instance.openScreenRecordingOsSettings();
+    await Future<void>.delayed(const Duration(milliseconds: 400));
     final ok = await ScreenTimeService.instance.hasScreenCapturePermission();
     if (ok) await _persistAfterGrant();
     return ok;
+  }
+
+  /// Permission UI: jump straight to OS settings (no MindSync alert dialog).
+  static Future<void> openScreenRecordingSettings() async {
+    if (kIsWeb) return;
+    await ScreenTimeService.instance.openScreenRecordingOsSettings();
+  }
+
+  /// Display-over-other-apps / overlay — system settings only.
+  static Future<void> openOverlaySettings() async {
+    if (kIsWeb) return;
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    await ScreenTimeService.instance.openManageOverlaySettings();
   }
 
   static Future<bool> ensureAccessibility(BuildContext context) async {

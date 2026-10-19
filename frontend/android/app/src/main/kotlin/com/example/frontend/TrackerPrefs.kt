@@ -284,6 +284,26 @@ object TrackerPrefs {
             .apply()
     }
 
+    /**
+     * Authoritative block list from Flutter/API — replaces stale per-app toggles so
+     * unblocked apps are not left blocked in native prefs.
+     */
+    fun replaceParentBlockedPackages(context: Context, packages: Collection<String>) {
+        val expanded =
+            BlockedPackageMatcher.expandPackages(
+                packages.filter { it.isNotBlank() }.distinct(),
+            )
+        setHomeBlockedPackages(context, expanded)
+        val obj = org.json.JSONObject()
+        for (pkg in expanded) {
+            obj.put(pkg, true)
+        }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_LOCAL_BLOCKED_PACKAGES, obj.toString())
+            .commit()
+    }
+
     fun homeBlockedPackages(context: Context): Set<String> {
         val raw =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

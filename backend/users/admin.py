@@ -16,9 +16,6 @@ from .models import (
     UserMoodWindow,
     VideoChunkAnalysis,
     CommunityPost,
-    DoctorProfile,
-    DoctorChatMessage,
-    TrustedContact,
     AppBranding,
     SubscriptionPlan,
     UserNotification,
@@ -188,50 +185,6 @@ class CommunityPostAdmin(admin.ModelAdmin):
     list_display = ('id', 'user', 'category', 'created_at')
     list_filter = ('category', 'created_at')
     search_fields = ('user__username', 'user__email', 'content')
-
-
-@admin.register(DoctorProfile)
-class DoctorProfileAdmin(admin.ModelAdmin):
-    list_display = (
-        'id',
-        'account',
-        'account_email',
-        'full_name',
-        'designation',
-        'experience_years',
-        'specialist',
-        'contact_number',
-        'is_active',
-    )
-    list_filter = ('is_active', 'specialist')
-    search_fields = (
-        'full_name',
-        'designation',
-        'specialist',
-        'contact_number',
-        'account__email',
-        'account__username',
-    )
-    autocomplete_fields = ('account',)
-
-    def account_email(self, obj):
-        return obj.account.email if obj.account else ''
-
-    account_email.short_description = 'Account Email'
-
-
-@admin.register(DoctorChatMessage)
-class DoctorChatMessageAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user', 'doctor', 'sender', 'created_at')
-    list_filter = ('sender', 'created_at', 'doctor')
-    search_fields = ('user__username', 'doctor__full_name', 'message')
-
-
-@admin.register(TrustedContact)
-class TrustedContactAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user', 'name', 'relationship', 'contact_number')
-    list_filter = ('relationship',)
-    search_fields = ('user__username', 'name', 'contact_number')
 
 
 @admin.register(AppBranding)

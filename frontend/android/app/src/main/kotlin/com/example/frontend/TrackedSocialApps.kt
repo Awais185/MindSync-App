@@ -60,4 +60,14 @@ object TrackedSocialApps {
         if (packageName.isNullOrBlank()) return false
         return tikTokPackages.contains(packageName)
     }
+
+    /**
+     * Social apps restricted when Usage Health daily limit is exceeded.
+     * WhatsApp stays accessible per product rules.
+     */
+    fun usageHealthLimitPackages(context: Context): Set<String> {
+        return MonitoredAppsCache.getPackages(context)
+            .filter { pkg -> !whatsAppPackages.contains(pkg) }
+            .toSet()
+    }
 }

@@ -4,19 +4,19 @@ import 'package:flutter/material.dart';
 import '../main_shell_screen.dart';
 import '../auth/login_screen.dart';
 import '../pages/community_screen.dart';
-import '../pages/emergency_screen.dart';
 import '../pages/face_scan_screen.dart';
 import '../pages/profile_screen.dart';
 import '../pages/recommendation_screen.dart';
 import '../pages/permissions_settings_screen.dart';
 import '../pages/upgrade_plan_screen.dart';
-import '../pages/doctor_inbox_screen.dart';
+import '../pages/report_screen.dart';
 import '../../services/local_auth_service.dart';
 import '../../services/screen_time_service.dart';
 import '../../services/recommendations_service.dart';
 import '../../services/subscription_service.dart';
 import '../../services/user_session_cache.dart';
 import '../../ui/layout/mindsync_layout.dart';
+import '../../utils/profession_display.dart';
 
 class MoreScreen extends StatefulWidget {
   const MoreScreen({super.key});
@@ -27,6 +27,7 @@ class MoreScreen extends StatefulWidget {
 
 class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMixin {
   final _auth = LocalAuthService();
+  final ScrollController _scrollController = ScrollController();
   AuthProfile? _profile;
   late Future<WellnessRecommendationResponse> _recommendationsFuture;
   VoidCallback? _sessionListener;
@@ -47,10 +48,19 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
 
   @override
   void dispose() {
+    _scrollController.dispose();
     if (_sessionListener != null) {
       UserSessionCache.sessionGeneration.removeListener(_sessionListener!);
     }
     super.dispose();
+  }
+
+  Future<void> _openRecommendationScreen() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const RecommendationScreen()),
+    );
+    if (!mounted || !_scrollController.hasClients) return;
+    _scrollController.jumpTo(0);
   }
 
   void _onUserSessionChanged() {
@@ -78,6 +88,8 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
       body: SafeArea(
         top: false,
         child: ListView(
+          controller: _scrollController,
+          primary: false,
           physics: const AlwaysScrollableScrollPhysics(
             parent: BouncingScrollPhysics(),
           ),
@@ -108,7 +120,7 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      _profile?.email ?? 'No email found',
+                      formatProfessionLabel(_profile?.profession),
                       style: const TextStyle(
                         fontSize: 12,
                         color: Color(0xFF868894),
@@ -160,10 +172,44 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
                     ),
                   );
                 }
-                final recs =
-                    (snapshot.data ?? WellnessRecommendationResponse.empty).cards;
-                if (recs.isEmpty) return const SizedBox.shrink();
-                final top = recs.first;
+                final model =
+                    snapshot.data ?? WellnessRecommendationResponse.empty;
+                if (!model.hasSummary) {
+                  return Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 4),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: const Text(
+                      'AI recommendations load from your 7-day report. Open the full page to generate your plan.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        height: 1.45,
+                        color: Color(0xFF676B79),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  );
+                }
+                final previewLine = model.summaryLines.isNotEmpty
+                    ? model.summaryLines.first
+                    : model.summaryText;
+                final recs = model.cards;
+                final top = recs.isNotEmpty
+                    ? recs.first
+                    : RecommendationCard(
+                        title: 'Your AI wellness plan',
+                        description: previewLine,
+                        category: 'Personalized',
+                        priority: 'Medium',
+                        action: const RecommendationAction(
+                          type: 'generic',
+                          label: 'View All Recommendations',
+                        ),
+                      );
                 final isHigh = top.priority.toLowerCase() == 'high';
                 final isMedium = top.priority.toLowerCase() == 'medium';
                 final bg = isHigh
@@ -234,13 +280,7 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
                           width: double.infinity,
                           height: 44,
                           child: ElevatedButton(
-                            onPressed: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => const RecommendationScreen(),
-                                ),
-                              );
-                            },
+                            onPressed: _openRecommendationScreen,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF6F39E8),
                               foregroundColor: Colors.white,
@@ -381,18 +421,18 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
             const SizedBox(height: 8),
 
             _MenuTile(
-              icon: Icons.phone_android,
-              title: 'Screen Time',
-              subtitle: 'Manage app usage limits',
-              onTap: () => _navigateTo(context, 'Screen Time'),
+              icon: Icons.assessment_outlined,
+              title: 'My Report',
+              subtitle: '7-day wellness & screen-time report',
+              onTap: () => _navigateTo(context, 'My Report'),
             ),
             const SizedBox(height: 8),
 
             _MenuTile(
-              icon: Icons.emergency,
-              title: 'Emergency',
-              subtitle: 'Crisis support & resources',
-              onTap: () => _navigateTo(context, 'Emergency'),
+              icon: Icons.phone_android,
+              title: 'Screen Time',
+              subtitle: 'Manage app usage limits',
+              onTap: () => _navigateTo(context, 'Screen Time'),
             ),
             const SizedBox(height: 8),
 
@@ -410,15 +450,6 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
               subtitle: 'Personalized content for you',
               onTap: () => _navigateTo(context, 'Recommendation'),
             ),
-            if ((_profile?.isApprovedDoctor ?? false)) ...[
-              const SizedBox(height: 8),
-              _MenuTile(
-                icon: Icons.inbox_rounded,
-                title: 'Inbox',
-                subtitle: 'User messages for doctor account',
-                onTap: () => _navigateTo(context, 'Inbox'),
-              ),
-            ],
             const SizedBox(height: 28),
 
             const Text(
@@ -520,10 +551,10 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
           context,
         ).push(MaterialPageRoute(builder: (_) => const UpgradePlanScreen()));
         return;
-      case 'Emergency':
+      case 'My Report':
         Navigator.of(
           context,
-        ).push(MaterialPageRoute(builder: (_) => const EmergencyScreen()));
+        ).push(MaterialPageRoute(builder: (_) => const ReportScreen()));
         return;
       case 'Community':
         Navigator.of(
@@ -531,9 +562,7 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
         ).push(MaterialPageRoute(builder: (_) => const CommunityScreen()));
         return;
       case 'Recommendation':
-        Navigator.of(
-          context,
-        ).push(MaterialPageRoute(builder: (_) => const RecommendationScreen()));
+        _openRecommendationScreen();
         return;
       case 'Face Scan':
         Navigator.of(
@@ -551,11 +580,6 @@ class _MoreScreenState extends State<MoreScreen> with AutomaticKeepAliveClientMi
           ),
           (_) => false,
         );
-        return;
-      case 'Inbox':
-        Navigator.of(
-          context,
-        ).push(MaterialPageRoute(builder: (_) => const DoctorInboxScreen()));
         return;
       default:
         return;

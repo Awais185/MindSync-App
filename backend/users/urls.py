@@ -1,5 +1,5 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
+from users.jwt_views import DocumentedTokenRefreshView
 from .parental_views import (
     ParentBlockedAppsAPIView,
     ParentBlockedAppUpdateAPIView,
@@ -9,11 +9,6 @@ from .parental_views import (
 )
 from .community_views import (
     CommunityPostsAPIView,
-    DoctorsListAPIView,
-    TrustedContactsAPIView,
-    DoctorChatAPIView,
-    DoctorInboxAPIView,
-    DoctorUserThreadAPIView,
     CommunityPostLikeToggleAPIView,
     CommunityPostCommentsAPIView,
 )
@@ -38,13 +33,19 @@ from .views import (
     UserWeeklyReportAPIView,
     VideoChunkAnalysisAPIView,
 )
-from .analytics_views import AnalyticsDashboardAPIView
+from .analytics_views import (
+    AnalyticsDashboardAPIView,
+    BehaviourStudyDayAPIView,
+    ContentTypeWatchAPIView,
+)
+from .recommendation_views import AIWellnessRecommendationAPIView
 from .notification_views import (
     NotificationBulkDeleteAPIView,
     NotificationDetailAPIView,
     NotificationListAPIView,
     NotificationMarkAllReadAPIView,
     NotificationSyncTriggersAPIView,
+    ParentScheduleNotificationAPIView,
     NotificationUnreadCountAPIView,
 )
 from .mood_views import (
@@ -55,7 +56,7 @@ from .mood_views import (
 )
 
 urlpatterns = [
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/refresh/', DocumentedTokenRefreshView.as_view(), name='token_refresh'),
     path('signup/', SignupAPIView.as_view()),
     path('login/', LoginAPIView.as_view()),
     path('google/', GoogleAuthAPIView.as_view()),
@@ -77,9 +78,13 @@ urlpatterns = [
     path('usage/monthly/', MonthlyUsageAPIView.as_view()),
     path('usage/live/', LiveUsageAPIView.as_view()),
     path('analytics/dashboard/', AnalyticsDashboardAPIView.as_view()),
+    path('analytics/behaviour-study/day/', BehaviourStudyDayAPIView.as_view()),
+    path('analytics/content-type/', ContentTypeWatchAPIView.as_view()),
+    path('recommendations/ai/', AIWellnessRecommendationAPIView.as_view()),
     path('notifications/', NotificationListAPIView.as_view()),
     path('notifications/unread-count/', NotificationUnreadCountAPIView.as_view()),
     path('notifications/sync-triggers/', NotificationSyncTriggersAPIView.as_view()),
+    path('notifications/parent-schedule/', ParentScheduleNotificationAPIView.as_view()),
     path('notifications/mark-all-read/', NotificationMarkAllReadAPIView.as_view()),
     path('notifications/bulk-delete/', NotificationBulkDeleteAPIView.as_view()),
     path('notifications/<int:notification_id>/', NotificationDetailAPIView.as_view()),
@@ -94,9 +99,4 @@ urlpatterns = [
     path('community/posts/', CommunityPostsAPIView.as_view()),
     path('community/posts/<int:post_id>/like/', CommunityPostLikeToggleAPIView.as_view()),
     path('community/posts/<int:post_id>/comments/', CommunityPostCommentsAPIView.as_view()),
-    path('emergency/doctors/', DoctorsListAPIView.as_view()),
-    path('emergency/trusted-contacts/', TrustedContactsAPIView.as_view()),
-    path('emergency/doctors/<int:doctor_id>/chat/', DoctorChatAPIView.as_view()),
-    path('doctor/inbox/', DoctorInboxAPIView.as_view()),
-    path('doctor/inbox/<int:user_id>/messages/', DoctorUserThreadAPIView.as_view()),
 ]

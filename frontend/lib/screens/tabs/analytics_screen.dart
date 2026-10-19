@@ -4,8 +4,12 @@ import 'package:flutter/material.dart';
 import '../../models/analytics_dashboard_payload.dart';
 import '../../services/analytics_dashboard_service.dart';
 import '../../services/tracking_permissions_gate.dart';
+import '../../services/wellness_dashboard_service.dart';
 import '../../utils/mental_health_severity.dart';
 import '../pages/behavioral_insight_detail_screen.dart';
+import '../pages/behaviour_study_day_screen.dart';
+import '../pages/content_type_watch_screen.dart';
+import 'home/home_hero_metrics.dart';
 
 enum AnalyticsRange { week, day, month }
 
@@ -36,9 +40,16 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     _dashboardFuture = AnalyticsDashboardService.instance.fetch(
       _rangeKey(selected),
     );
+    unawaited(WellnessDashboardService.instance.refreshHome(force: true));
     _analyticsPoll = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!mounted) return;
       _reloadDashboard();
+      unawaited(WellnessDashboardService.instance.refreshHome());
+      unawaited(
+        WellnessDashboardService.instance.refresh(
+          days: kReportWellnessWindowDays,
+        ),
+      );
     });
   }
 
@@ -98,7 +109,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          _MindSyncIndexHero(index: dash.mindsyncIndex),
+                          const _MindSyncIndexHero(),
                           const SizedBox(height: 22),
                           Row(
                             children: [
@@ -297,24 +308,7 @@ class _BehavioralInsightSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final study = dash.behaviourStudy;
-    final topDetected = study.classes
-        .where((row) => ((row['count'] as num?)?.toInt() ?? 0) > 0)
-        .toList();
-    final behaviourSubtitle = !study.hasData
-        ? 'No behaviour patterns recorded yet.'
-        : topDetected.isEmpty
-            ? 'No symptoms detected in this period.'
-            : () {
-                topDetected.sort(
-                  (a, b) =>
-                      ((b['count'] as num?) ?? 0).compareTo(
-                        (a['count'] as num?) ?? 0,
-                      ),
-                );
-                final top = topDetected.first;
-                return '${top['label']}: ${top['count']} detected';
-              }();
+    final behaviourSubtitle = 'Today · 30s scans & stress / emotion / depression';
 
     final facial = dash.facialExpressionStudy;
     final validTotal = facial.classes.fold<int>(
@@ -322,13 +316,8 @@ class _BehavioralInsightSection extends StatelessWidget {
       (sum, row) => sum + ((row['valid_detections'] as num?)?.toInt() ?? 0),
     );
 
-    final content = dash.contentTypeAnalysis;
-    final sorted = [...content.items]
-      ..sort(
-        (a, b) =>
-            ((b['percent'] as num?) ?? 0).compareTo((a['percent'] as num?) ?? 0),
-      );
-    final topContent = sorted.isNotEmpty ? sorted.first : null;
+    const contentSubtitle =
+        'Last 7 days · video tracking (gaming, education, social…)';
 
     return Column(
       children: [
@@ -340,16 +329,7 @@ class _BehavioralInsightSection extends StatelessWidget {
           subtitle: behaviourSubtitle,
           onTap: () {
             Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => BehavioralInsightDetailScreen(
-                  title: 'Behaviour Study',
-                  kind: BehavioralInsightKind.behaviourStudy,
-                  rangeLabel: rangeLabel,
-                  behaviourStudy: dash.behaviourStudy,
-                  facialExpressionStudy: dash.facialExpressionStudy,
-                  contentTypeAnalysis: dash.contentTypeAnalysis,
-                ),
-              ),
+              MaterialPageRoute(builder: (_) => const BehaviourStudyDayScreen()),
             );
           },
         ),
@@ -383,20 +363,11 @@ class _BehavioralInsightSection extends StatelessWidget {
           iconBg: const Color(0xFFFFF4E5),
           iconColor: const Color(0xFFE09100),
           title: 'Most Content Type',
-          subtitle: !content.hasData || topContent == null
-              ? 'No content type data available yet.'
-              : '${topContent['label']} leads at ${((topContent['percent'] as num?) ?? 0).toStringAsFixed(0)}%',
+          subtitle: contentSubtitle,
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => BehavioralInsightDetailScreen(
-                  title: 'Most Content Type',
-                  kind: BehavioralInsightKind.contentType,
-                  rangeLabel: rangeLabel,
-                  behaviourStudy: dash.behaviourStudy,
-                  facialExpressionStudy: dash.facialExpressionStudy,
-                  contentTypeAnalysis: dash.contentTypeAnalysis,
-                ),
+                builder: (_) => const ContentTypeWatchScreen(),
               ),
             );
           },
@@ -407,25 +378,46 @@ class _BehavioralInsightSection extends StatelessWidget {
 }
 
 class _MindSyncIndexHero extends StatelessWidget {
-  const _MindSyncIndexHero({required this.index});
-
-  final AnalyticsMindSyncIndex index;
+  const _MindSyncIndexHero();
 
   String _stressCaption(double v) =>
       MentalHealthSeverity.labelFromPercent(v);
 
   @override
   Widget build(BuildContext context) {
-    final score = index.wellbeingScore;
-    final scoreText = score > 0 ? '$score' : '—';
-    final trend = index.trendPointsVsPrior;
-    final trendLabel = trend == null
-        ? 'Live from your data'
-        : trend >= 0
-            ? '+$trend pts vs prior period'
-            : '$trend pts vs prior period';
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        WellnessDashboardService.instance.homeDashboard,
+        WellnessDashboardService.instance.dashboard,
+        WellnessDashboardService.instance.wellbeingDeltaPoints,
+      ]),
+      builder: (context, _) {
+        final home = WellnessDashboardService.instance.homeDashboard.value;
+        final report = WellnessDashboardService.instance.dashboard.value;
+        final score = HomeHeroMetrics.resolveMindBalanceWellbeingScore(
+          home,
+          reportWindow: report,
+        );
+        final scoreText = score > 0 ? '$score' : '—';
+        final delta = WellnessDashboardService.instance.wellbeingDeltaPoints.value;
+        final trendLabel = delta == 0
+            ? 'Live from your data'
+            : delta >= 0
+                ? '+$delta pts vs yesterday'
+                : '$delta pts vs yesterday';
 
-    return Container(
+        final mh = home.mentalHealth;
+        final stress = mh.hasData
+            ? mh.stress.score
+            : home.stressIndicator.toDouble();
+        final depression = mh.hasData
+            ? mh.depression.score
+            : home.depressionIndicator.toDouble();
+        final emotion = home.latestEmotion.isNotEmpty
+            ? home.latestEmotion
+            : report.latestEmotion;
+
+        return Container(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
@@ -489,6 +481,16 @@ class _MindSyncIndexHero extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
+          const Text(
+            'Well-being Score',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFFE9D5FF),
+              letterSpacing: 0.2,
+            ),
+          ),
+          const SizedBox(height: 4),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -526,11 +528,11 @@ class _MindSyncIndexHero extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  (trend ?? 0) >= 0
+                  delta >= 0
                       ? Icons.arrow_upward_rounded
                       : Icons.arrow_downward_rounded,
                   size: 11,
-                  color: (trend ?? 0) >= 0
+                  color: delta >= 0
                       ? const Color(0xFFB9F0C0)
                       : const Color(0xFFFFB4B4),
                 ),
@@ -553,24 +555,11 @@ class _MindSyncIndexHero extends StatelessWidget {
                 child: _IndexTile(
                   icon: Icons.monitor_heart_outlined,
                   label: 'STRESS',
-                  value: index.stressAvg > 0
-                      ? index.stressAvg.round().toString()
+                  value: stress > 0
+                      ? stress.round().toString()
                       : '—',
-                  caption: index.stressAvg > 0
-                      ? _stressCaption(index.stressAvg)
-                      : 'No data',
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _IndexTile(
-                  icon: Icons.favorite_border_rounded,
-                  label: 'ANXIETY',
-                  value: index.anxietyAvg > 0
-                      ? index.anxietyAvg.round().toString()
-                      : '—',
-                  caption: index.anxietyAvg > 0
-                      ? _stressCaption(index.anxietyAvg)
+                  caption: stress > 0
+                      ? _stressCaption(stress)
                       : 'No data',
                 ),
               ),
@@ -579,18 +568,32 @@ class _MindSyncIndexHero extends StatelessWidget {
                 child: _IndexTile(
                   icon: Icons.insights_rounded,
                   label: 'DEPRESSION',
-                  value: index.depressionAvg > 0
-                      ? index.depressionAvg.round().toString()
+                  value: depression > 0
+                      ? depression.round().toString()
                       : '—',
-                  caption: index.depressionAvg > 0
-                      ? _stressCaption(index.depressionAvg)
+                  caption: depression > 0
+                      ? _stressCaption(depression)
                       : 'No data',
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _IndexTile(
+                  icon: Icons.emoji_emotions_outlined,
+                  label: 'EMOTION',
+                  value: emotion.isNotEmpty ? emotion : '—',
+                  caption: emotion.isNotEmpty
+                      ? 'Latest background scan'
+                      : 'No data',
+                  valueFontSize: emotion.length > 8 ? 13 : 18,
                 ),
               ),
             ],
           ),
         ],
       ),
+    );
+      },
     );
   }
 }
@@ -601,12 +604,14 @@ class _IndexTile extends StatelessWidget {
     required this.label,
     required this.value,
     required this.caption,
+    this.valueFontSize = 18,
   });
 
   final IconData icon;
   final String label;
   final String value;
   final String caption;
+  final double valueFontSize;
 
   @override
   Widget build(BuildContext context) {
@@ -642,11 +647,14 @@ class _IndexTile extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             value,
-            style: const TextStyle(
-              fontSize: 18,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: valueFontSize,
               fontWeight: FontWeight.w800,
               color: Colors.white,
               letterSpacing: -0.3,
+              height: 1.1,
             ),
           ),
           const SizedBox(height: 2),
@@ -942,32 +950,35 @@ class _RhythmDistributionCard extends StatelessWidget {
               color: Color(0xFF8A8D99),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           SizedBox(
-            height: 150,
+            height: 158,
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: List.generate(7, (i) {
                 final h = hours[i];
-                final barH = (h / scale * 110).clamp(4.0, 110.0);
+                final barH = (h / scale * 104).clamp(4.0, 104.0);
                 final isPeak = i == peakIndex;
                 return Expanded(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 4),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
                           '${h.toStringAsFixed(1)}h',
+                          maxLines: 1,
                           style: TextStyle(
                             fontSize: 9,
+                            height: 1.1,
                             fontWeight: FontWeight.w700,
                             color: isPeak
                                 ? const Color(0xFF6F39E8)
                                 : const Color(0xFF9B9EA9),
                           ),
                         ),
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 3),
                         Container(
                           height: barH,
                           decoration: BoxDecoration(
@@ -977,11 +988,14 @@ class _RhythmDistributionCard extends StatelessWidget {
                             borderRadius: BorderRadius.circular(14),
                           ),
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 6),
                         Text(
                           labels[i],
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontSize: 11,
+                            fontSize: 10,
+                            height: 1.1,
                             fontWeight: FontWeight.w800,
                             color: Color(0xFF8A8D99),
                           ),

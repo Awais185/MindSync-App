@@ -4,15 +4,15 @@ class AnalyticsMindSyncIndex {
   const AnalyticsMindSyncIndex({
     required this.wellbeingScore,
     required this.stressAvg,
-    required this.anxietyAvg,
     required this.depressionAvg,
+    required this.latestEmotion,
     this.trendPointsVsPrior,
   });
 
   final int wellbeingScore;
   final double stressAvg;
-  final double anxietyAvg;
   final double depressionAvg;
+  final String latestEmotion;
   final int? trendPointsVsPrior;
 
   factory AnalyticsMindSyncIndex.fromJson(Map<String, dynamic>? j) {
@@ -20,8 +20,8 @@ class AnalyticsMindSyncIndex {
     return AnalyticsMindSyncIndex(
       wellbeingScore: (j['wellbeing_score'] as num?)?.toInt() ?? 0,
       stressAvg: (j['stress_avg'] as num?)?.toDouble() ?? 0,
-      anxietyAvg: (j['anxiety_avg'] as num?)?.toDouble() ?? 0,
       depressionAvg: (j['depression_avg'] as num?)?.toDouble() ?? 0,
+      latestEmotion: (j['latest_emotion'] ?? '').toString().trim(),
       trendPointsVsPrior: (j['trend_points_vs_prior'] as num?)?.toInt(),
     );
   }
@@ -29,8 +29,8 @@ class AnalyticsMindSyncIndex {
   static const empty = AnalyticsMindSyncIndex(
     wellbeingScore: 0,
     stressAvg: 0,
-    anxietyAvg: 0,
     depressionAvg: 0,
+    latestEmotion: '',
   );
 }
 

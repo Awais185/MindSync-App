@@ -100,24 +100,50 @@ def build_studio_report(
     mh = chunk.get('mental_health') if isinstance(chunk.get('mental_health'), dict) else {}
     mh_avg = mh.get('averages') if isinstance(mh.get('averages'), dict) else {}
     cond_avg = condition.get('averages') if isinstance(condition.get('averages'), dict) else {}
+    cond_days = condition.get('days') if isinstance(condition.get('days'), list) else []
 
-    stress = _safe_int(cond_avg.get('stress') or mh_avg.get('stress'))
-    anxiety = _safe_int(cond_avg.get('anxiety') or mh_avg.get('anxiety'))
-    depression = _safe_int(cond_avg.get('depression') or mh_avg.get('depression'))
+    snap = payload.get('wellbeing_snapshot') if isinstance(payload.get('wellbeing_snapshot'), dict) else {}
+    stress = _safe_int(snap.get('stress') or cond_avg.get('stress') or mh_avg.get('stress'))
+    depression = _safe_int(snap.get('depression') or cond_avg.get('depression') or mh_avg.get('depression'))
+    wellbeing = _safe_int(snap.get('wellbeing_score'))
+    if wellbeing == 0 and not snap.get('has_wellbeing_signal'):
+        wellbeing = None
+    wellness_index = _safe_int(snap.get('mental_health_score'))
+    if wellness_index == 0 and not snap.get('has_mental_health_data'):
+        wellness_index = None
 
-    emotional_stability = _safe_int(progress.get('emotional_stability_score'))
-    productivity = _safe_int(progress.get('productivity_score'))
-    sleep_score = _safe_int(progress.get('avg_sleep_score'))
-    wellbeing = emotional_stability or productivity or None
-    if wellbeing is None and stress is not None:
-        wellbeing = max(0, min(100, 100 - stress))
+    emotion_week = str(snap.get('latest_emotion') or '').strip()
+    if not emotion_week:
+        emotion_week = str(
+            mood_weekly.get('latest_mood')
+            or mood_weekly.get('dominant_mood')
+            or (mood_weekly.get('overall_mood') or {}).get('raw_label')
+            or mood_weekly.get('overall_label')
+            or ''
+        ).strip()
+    if not emotion_week:
+        for row in cond_days if isinstance(cond_days, list) else []:
+            if isinstance(row, dict) and row.get('emotion'):
+                emotion_week = str(row['emotion'])
+                break
 
-    wellness_index = wellbeing
-    if wellness_index is not None and stress is not None:
-        wellness_index = max(0, min(100, int(round((wellbeing + max(0, 100 - stress)) / 2))))
+    sleep_score = None
+    sleep_tracked_days = sum(
+        1
+        for row in seven_day
+        if isinstance(row, dict) and row.get('sleep_data_source') == 'screen_time_table'
+    )
+    if sleep_tracked_days > 0:
+        sleep_score = _safe_int(progress.get('avg_sleep_score'))
+    mood_stability = _safe_int(mood_weekly.get('mood_score') or mood_weekly.get('stability_score'))
 
     screen_hours = analytics.get('screen_time_hours') if isinstance(analytics.get('screen_time_hours'), list) else []
-    screen_on_minutes = int(sum(_safe_float(h) for h in screen_hours) * 60)
+    screen_on_minutes = int(
+        sum(_safe_int(row.get('total_screen_time'), 0) or 0 for row in seven_day if isinstance(row, dict))
+        / 60
+    )
+    if screen_on_minutes <= 0:
+        screen_on_minutes = int(sum(_safe_float(h) for h in screen_hours) * 60)
 
     content_type_block = _as_dict(chunk.get('content_type'))
     content_items = content_type_block.get('items') or []
@@ -140,15 +166,17 @@ def build_studio_report(
         for name, sec in sorted(app_dist.items(), key=lambda x: -int(x[1] or 0))[:5]:
             most_used_apps.append({'app_name': str(name), 'seconds': int(sec or 0)})
 
-    dominant_mood = str(
+    dominant_mood = emotion_week or str(
         mood_weekly.get('dominant_mood')
         or mood_weekly.get('overall_mood')
+        or (seven_day[-1].get('emotion') if seven_day else '')
         or (seven_day[-1].get('dominant_mood') if seven_day else '')
-        or 'No data'
+        or ''
     )
+    if not dominant_mood:
+        dominant_mood = 'No data'
 
     daily_mental: list[dict[str, Any]] = []
-    cond_days = condition.get('days') if isinstance(condition.get('days'), list) else []
     mh_trend = mh.get('weekly_trend') if isinstance(mh.get('weekly_trend'), list) else []
     for i, day_row in enumerate(seven_day[:7]):
         if not isinstance(day_row, dict):
@@ -156,16 +184,21 @@ def build_studio_report(
         iso = str(day_row.get('date') or '')
         cd = cond_days[i] if i < len(cond_days) and isinstance(cond_days[i], dict) else {}
         mt = mh_trend[i] if i < len(mh_trend) and isinstance(mh_trend[i], dict) else {}
+        day_emotion = (
+            cd.get('emotion')
+            or day_row.get('emotion')
+            or day_row.get('dominant_mood')
+        )
         daily_mental.append(
             {
                 'date': iso,
                 'day_label': f'Day {i + 1}',
                 'weekday': iso,
-                'stress': _safe_int(cd.get('stress') or mt.get('stress') or day_row.get('stress_score')),
-                'anxiety': _safe_int(cd.get('anxiety') or mt.get('anxiety') or day_row.get('anxiety_score')),
+                'stress': _safe_int(cd.get('stress') or mt.get('stress')),
                 'depression': _safe_int(
                     cd.get('depression') or mt.get('depression') or day_row.get('depression_score')
                 ),
+                'emotion': str(day_emotion).strip() if day_emotion else '',
             }
         )
 
@@ -191,7 +224,8 @@ def build_studio_report(
         insights.append(str(behaviour['message']))
 
     avg_screen_h = sum(_safe_float(h) for h in screen_hours) / max(len(screen_hours), 1)
-    mood_stability = _safe_int(progress.get('emotional_stability_score'))
+    if avg_screen_h <= 0 and screen_on_minutes > 0:
+        avg_screen_h = screen_on_minutes / 60.0 / max(len(seven_day), 1)
 
     metric_cards = {
         'avg_screen': {
@@ -204,11 +238,11 @@ def build_studio_report(
             ),
         },
         'mood': {
-            'label': 'Mood',
-            'value': mood_stability,
+            'label': 'Emotion',
+            'value': None,
             'unit': '',
-            'display': str(mood_stability) if mood_stability is not None else '—',
-            'status': _metric_status(mood_stability),
+            'display': emotion_week if emotion_week else '—',
+            'status': 'No Data' if not emotion_week else 'Stable',
         },
         'sleep': {
             'label': 'Sleep',
@@ -268,28 +302,47 @@ def build_studio_report(
     mood_over_week = []
     risk_days = 0
     for i, dm in enumerate(daily_mental):
-        s = dm.get('stress')
-        at_risk = s is not None and int(s) > 80
+        dep = dm.get('depression')
+        at_risk = dep is not None and int(dep) > 80
         if at_risk:
             risk_days += 1
         mood_over_week.append(
             {
                 'date': dm.get('date'),
                 'day_label': dm.get('day_label'),
-                'stress': s,
+                'depression': dep,
+                'emotion': dm.get('emotion'),
                 'at_risk': at_risk,
-                'status': 'At Risk' if at_risk else ('No data' if s is None else 'Normal'),
+                'status': 'At Risk' if at_risk else ('No data' if dep is None else 'Normal'),
             }
         )
 
-    late_night_hours = sum(_safe_float(h) for h in (analytics.get('late_night_usage_hours') or []))
+    sleep_block = analytics.get('sleep_tracking') if isinstance(analytics.get('sleep_tracking'), dict) else {}
+    sleep_daily = sleep_block.get('daily') if isinstance(sleep_block.get('daily'), list) else []
+    tracked_nights = _safe_int(sleep_block.get('tracked_nights'), 0) or sleep_tracked_days
+    late_night_hours = _safe_float(
+        sleep_block.get('total_late_night_hours'),
+        sum(_safe_float(h) for h in (analytics.get('late_night_usage_hours') or [])),
+    )
+    if tracked_nights > 0:
+        sleep_msg = (
+            f'Sleep tracked on {tracked_nights} night(s) from your phone usage window. '
+            f'Late-night screen time this week: {late_night_hours:.1f}h (10 PM–6 AM).'
+        )
+    elif late_night_hours > 0:
+        sleep_msg = (
+            f'Late-night phone use: {late_night_hours:.1f}h (10 PM–6 AM). '
+            'Sleep hours will appear when nightly sleep is recorded in screen-time tracking.'
+        )
+    else:
+        sleep_msg = 'Enable screen-time tracking to record sleep duration and late-night usage.'
     sleep_quality = {
         'score': sleep_score,
         'status': _metric_status(sleep_score),
         'late_night_hours': round(late_night_hours, 1),
-        'message': (
-            'Uses phone use between 10 PM – 5 AM (local time, last 7 days) plus rough daytime load.'
-        ),
+        'tracked_nights': tracked_nights,
+        'daily': sleep_daily[:7],
+        'message': sleep_msg,
     }
 
     risk_alerts = condition.get('risk_alerts') if isinstance(condition.get('risk_alerts'), list) else []
@@ -308,9 +361,9 @@ def build_studio_report(
     chunk_count = _safe_int(chunk.get('total_chunks'), 0) or 0
     has_confidence_data = confidence > 0 or chunk_count >= 3
     ai_confidence = {
-        'emotion': confidence or (82 if has_confidence_data else None),
-        'behavior': min(95, confidence + 2) if confidence else (85 if has_confidence_data else None),
-        'risk': max(60, confidence - 1) if confidence else (86 if has_confidence_data else None),
+        'emotion': confidence if has_confidence_data else None,
+        'behavior': min(95, confidence + 2) if confidence and has_confidence_data else None,
+        'risk': max(60, confidence - 1) if confidence and has_confidence_data else None,
         'banner': (
             'High confidence in analysis'
             if has_confidence_data and confidence >= 70
@@ -331,24 +384,32 @@ def build_studio_report(
         sec = _safe_int(row.get('total_screen_time'), 0) or 0
         hrs = sec / 3600.0
         dm = daily_mental[i] if i < len(daily_mental) else {}
-        mood_s = dm.get('stress')
+        emo = (dm.get('emotion') or '').strip()
         daily_summary.append(
             {
                 'day': f'Day {i + 1}',
                 'date': iso,
                 'screen': f'{hrs:.1f} h' if hrs > 0 else 'No screen time recorded',
-                'mood': str(mood_s) if mood_s is not None else 'No data',
+                'mood': emo if emo else 'No data',
             }
         )
 
-    normal_c = sum(1 for m in daily_mental if m.get('stress') is not None and int(m['stress']) < 60)
-    warning_c = sum(1 for m in daily_mental if m.get('stress') is not None and int(m['stress']) >= 80)
+    normal_c = sum(1 for m in daily_mental if m.get('depression') is not None and int(m['depression']) < 60)
+    warning_c = sum(1 for m in daily_mental if m.get('depression') is not None and int(m['depression']) >= 80)
     metrics_status = {
         'normal': normal_c,
-        'positive': sum(1 for m in daily_mental if (m.get('stress') or 100) < 40),
-        'stable': sum(1 for m in daily_mental if m.get('stress') is not None and 40 <= int(m['stress']) < 80),
+        'positive': sum(1 for m in daily_mental if (m.get('depression') or 100) < 40),
+        'stable': sum(
+            1
+            for m in daily_mental
+            if m.get('depression') is not None and 40 <= int(m['depression']) < 80
+        ),
         'warning': warning_c,
-        'message': '✅ All metrics normal' if warning_c == 0 else f'⚠ {warning_c} day(s) above stress threshold',
+        'message': (
+            '✅ All depression signals normal'
+            if warning_c == 0
+            else f'⚠ {warning_c} day(s) above depression threshold'
+        ),
     }
 
     if not clinical_summary:
@@ -358,11 +419,21 @@ def build_studio_report(
         )
 
     rec_block = _as_dict(payload.get('recommendations'))
-    recommendation = rec_block.get('for_user', ['Maintain current healthy usage.'])
-    if isinstance(recommendation, list) and recommendation:
-        rec_text = str(recommendation[0])
-    else:
-        rec_text = 'Maintain current healthy usage.'
+    recommendation = rec_block.get('for_user') or []
+    if not isinstance(recommendation, list):
+        recommendation = []
+    recommendation = [str(s).strip() for s in recommendation if str(s).strip()]
+    rec_sections = rec_block.get('sections') or []
+    if not isinstance(rec_sections, list):
+        rec_sections = []
+    rec_text = str(rec_block.get('summary_line') or '').strip()
+    if not rec_text and recommendation:
+        rec_text = recommendation[0]
+    if not rec_text:
+        rec_text = 'Personalized tips will appear after more activity is logged this week.'
+    for bullet in recommendation:
+        if bullet not in insights:
+            insights.append(bullet)
 
     return {
         'user': {
@@ -379,7 +450,7 @@ def build_studio_report(
             'wellbeing_score': wellbeing,
             'mental_wellness_index': wellness_index,
             'stress': stress,
-            'anxiety': anxiety,
+            'emotion': emotion_week,
             'depression': depression,
             'analysed_video_chunks': chunk_count,
             'screen_on_minutes': screen_on_minutes,
@@ -398,11 +469,15 @@ def build_studio_report(
             'message': mh_summary or 'Wellbeing reflects your recent digital and mood signals.',
             'usage_categories': usage_categories,
             'recommendation': rec_text,
+            'recommendations': recommendation[:8],
+            'recommendation_sections': rec_sections[:5],
         },
         'charts': {
             'screen_time_vs_mood': screen_vs_mood,
             'daily_screen_trend': daily_screen_trend,
             'mood_over_week': mood_over_week,
+            'sleep_daily': sleep_daily[:7],
+            'late_night_daily': (analytics.get('late_night_usage_hours') or [])[:7],
         },
         'sleep_quality': sleep_quality,
         'risk_summary': risk_summary,
@@ -411,8 +486,8 @@ def build_studio_report(
         'metrics_status': metrics_status,
         'clinical_summary': clinical_summary,
         'condition_averages_line': (
-            f'7-day average — Stress: {stress if stress is not None else "—"} · '
-            f'Anxiety: {anxiety if anxiety is not None else "—"} · '
+            f'7-day — Stress: {stress if stress is not None else "—"} · '
+            f'Emotion: {emotion_week if emotion_week else "—"} · '
             f'Depression: {depression if depression is not None else "—"}'
         ),
     }

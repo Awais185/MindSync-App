@@ -82,11 +82,9 @@ def sync_user_mental_state(user: User) -> UserMentalState:
             latest_face.depression_score,
         )
     elif latest_expression:
-        stress, anxiety, depression = (
-            latest_expression.stress_score,
-            latest_expression.anxiety_score,
-            latest_expression.depression_score,
-        )
+        stress = latest_expression.stress_score
+        anxiety = 0
+        depression = latest_expression.depression_score
 
     state.stress_level = _score_to_stress_label(stress, anxiety, depression)
 

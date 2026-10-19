@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
@@ -32,7 +32,7 @@ def build_seven_day_condition_breakdown(
     chunk_analytics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from face_detection.models import FaceMoodScan, FacialExpressionCapture
-    from users.services.mood_weekly_service import _mood_label_from_json, _stress_from_label
+    from users.services.mood_weekly_service import _mood_label_from_json
 
     screen_map = {r.date: r for r in ScreenTime.objects.filter(user=user, date__range=(start_day, end_day))}
 
@@ -49,6 +49,7 @@ def build_seven_day_condition_breakdown(
     facial_by_day: dict[date, list] = defaultdict(list)
     for row in FacialExpressionCapture.objects.filter(
         user=user,
+        status=FacialExpressionCapture.STATUS_COMPLETED,
         created_at__date__range=(start_day, end_day),
     ):
         facial_by_day[timezone.localtime(row.created_at).date()].append(row)
@@ -67,39 +68,43 @@ def build_seven_day_condition_breakdown(
     day_rows: list[dict[str, Any]] = []
     risk_alerts: list[dict[str, Any]] = []
     stress_all: list[float] = []
-    anxiety_all: list[float] = []
     depression_all: list[float] = []
     screen_mood_rows: list[dict[str, Any]] = []
 
     for i, d in enumerate(days):
+        from users.openface_home_metrics import _label_from_capture
+
         stress_vals: list[float] = []
-        anxiety_vals: list[float] = []
         depression_vals: list[float] = []
+        emotion_labels: list[str] = []
 
         for fac in facial_by_day.get(d, []):
             if fac.stress_score is not None:
                 stress_vals.append(float(fac.stress_score))
-            if fac.anxiety_score is not None:
-                anxiety_vals.append(float(fac.anxiety_score))
             if fac.depression_score is not None:
                 depression_vals.append(float(fac.depression_score))
+            em = (getattr(fac, "emotion", None) or "").strip()
+            if not em:
+                em = _label_from_capture(fac)
+            if em and em.lower() not in {"awaiting scan", "neutral", ""}:
+                emotion_labels.append(em.strip().title())
+            elif em:
+                emotion_labels.append(em.strip().title())
 
         for scan in mood_by_day.get(d, []):
             label = _mood_label_from_json(scan.mood)
-            s = _stress_from_label(label)
-            stress_vals.append(s)
-            anxiety_vals.append(s * 0.92)
-            depression_vals.append(s * 0.78)
+            if label and label != 'Unknown':
+                emotion_labels.append(label.strip().title())
 
         stress = _avg_int(stress_vals)
-        anxiety = _avg_int(anxiety_vals)
         depression = _avg_int(depression_vals)
+        emotion = None
+        if emotion_labels:
+            emotion = Counter(emotion_labels).most_common(1)[0][0]
 
         chunk_row = chunk_trend_by_date.get(d.isoformat()) or {}
         if stress is None and chunk_row.get('stress') is not None:
             stress = float(chunk_row['stress'])
-        if anxiety is None and chunk_row.get('anxiety') is not None:
-            anxiety = float(chunk_row['anxiety'])
         if depression is None and chunk_row.get('depression') is not None:
             depression = float(chunk_row['depression'])
 
@@ -112,14 +117,11 @@ def build_seven_day_condition_breakdown(
 
         if stress is not None:
             stress_all.append(stress)
-        if anxiety is not None:
-            anxiety_all.append(anxiety)
         if depression is not None:
             depression_all.append(depression)
 
         for cond, score in (
             ('Stress', stress),
-            ('Anxiety', anxiety),
             ('Depression', depression),
         ):
             if score is not None and score > 80:
@@ -137,10 +139,9 @@ def build_seven_day_condition_breakdown(
                 'day': i + 1,
                 'date': d.isoformat(),
                 'stress': stress,
-                'anxiety': anxiety,
                 'depression': depression,
+                'emotion': emotion,
                 'stress_label': severity_label_from_percent(stress),
-                'anxiety_label': severity_label_from_percent(anxiety),
                 'depression_label': severity_label_from_percent(depression),
                 'screen_time_seconds': screen_seconds,
                 'screen_time_label': (
@@ -160,14 +161,9 @@ def build_seven_day_condition_breakdown(
                     'No screen time recorded' if not has_screen else None
                 ),
                 'stress': stress,
-                'anxiety': anxiety,
                 'depression': depression,
-                'dominant_mood': (
-                    mood_by_day[d][-1].mood.get('prediction', 'neutral')
-                    if mood_by_day.get(d)
-                    and isinstance(mood_by_day[d][-1].mood, dict)
-                    else None
-                ),
+                'emotion': emotion,
+                'dominant_mood': emotion,
             }
         )
 
@@ -175,10 +171,8 @@ def build_seven_day_condition_breakdown(
         'days': day_rows,
         'averages': {
             'stress': _avg_int(stress_all),
-            'anxiety': _avg_int(anxiety_all),
             'depression': _avg_int(depression_all),
             'stress_label': severity_label_from_percent(_avg_int(stress_all)),
-            'anxiety_label': severity_label_from_percent(_avg_int(anxiety_all)),
             'depression_label': severity_label_from_percent(_avg_int(depression_all)),
         },
         'risk_alerts': risk_alerts,

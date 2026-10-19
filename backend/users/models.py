@@ -434,6 +434,8 @@ class UserNotification(models.Model):
     EVENT_PASSWORD_RESET_REQUESTED = 'password_reset_requested'
     EVENT_PASSWORD_CHANGED = 'password_changed'
     EVENT_LOW_WELLBEING = 'low_wellbeing'
+    EVENT_PARENT_BEDTIME = 'parent_bedtime'
+    EVENT_PARENT_WAKEUP = 'parent_wakeup'
 
     EVENT_CHOICES = [
         (EVENT_WELCOME, 'Welcome'),
@@ -441,6 +443,8 @@ class UserNotification(models.Model):
         (EVENT_PASSWORD_RESET_REQUESTED, 'Password reset requested'),
         (EVENT_PASSWORD_CHANGED, 'Password changed'),
         (EVENT_LOW_WELLBEING, 'Low wellbeing'),
+        (EVENT_PARENT_BEDTIME, 'Parent bedtime'),
+        (EVENT_PARENT_WAKEUP, 'Parent wake-up'),
     ]
 
     user = models.ForeignKey(
@@ -474,3 +478,28 @@ class UserNotification(models.Model):
 
     def __str__(self):
         return f'{self.user_id} {self.event_type} {self.title[:40]}'
+
+
+class UserAIWellnessRecommendation(models.Model):
+    """Cached personalized AI summary for the Recommendations screen (7-day TTL)."""
+
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='ai_wellness_recommendation',
+    )
+    summary_text = models.TextField(blank=True, default='')
+    lines = models.JSONField(blank=True, default=list)
+    risk_level = models.CharField(max_length=16, blank=True, default='unknown')
+    main_issues = models.JSONField(blank=True, default=list)
+    source = models.CharField(max_length=32, blank=True, default='fallback')
+    report_window_end = models.DateField(blank=True, null=True)
+    generated_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'AI wellness recommendation'
+
+    def __str__(self):
+        return f'{self.user_id} ai_rec @ {self.generated_at:%Y-%m-%d}'

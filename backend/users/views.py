@@ -1,7 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.utils import timezone
 from django.db.models import Sum, Avg
 from django.db.models.functions import TruncDate, TruncHour
@@ -12,8 +13,19 @@ from .serializers import SignupSerializer
 from .models import AppUsage, ScreenUsageEvent, VideoChunkAnalysis
 from users.app_display_names import display_app_name, rollup_screen_usage_apps
 from tracking.models import ScreenTime
+from users.openapi_auth import (
+    google_auth_schema,
+    login_schema,
+    password_reset_schema,
+    signup_schema,
+)
+
+
 class SignupAPIView(APIView):
-    parser_classes = (MultiPartParser, FormParser)
+    permission_classes = (AllowAny,)
+    parser_classes = (JSONParser, MultiPartParser, FormParser)
+
+    @signup_schema
     def post(self, request):
         print(f"DEBUG: Received signup data: {request.data}")
         serializer = SignupSerializer(data=request.data)
@@ -37,8 +49,6 @@ from .serializers import (
     AppUsageSerializer,
     TrackUsageSerializer,
 )
-from rest_framework.permissions import IsAuthenticated, AllowAny
-
 class ProfileUpdateAPIView(APIView):
     permission_classes = (IsAuthenticated,)
     parser_classes = (MultiPartParser, FormParser)
@@ -83,6 +93,7 @@ class PasswordResetAPIView(APIView):
 
     permission_classes = (AllowAny,)
 
+    @password_reset_schema
     def post(self, request):
         serializer = PasswordResetSerializer(data=request.data)
         if serializer.is_valid():
@@ -461,6 +472,10 @@ class LiveUsageAPIView(APIView):
         return Response({'total_seconds': total, 'current_app': current})
 
 class LoginAPIView(APIView):
+    permission_classes = (AllowAny,)
+    parser_classes = (JSONParser, FormParser)
+
+    @login_schema
     def post(self, request):
         print(f"DEBUG: Login attempt for email: {request.data.get('username_or_email')}")
         serializer = LoginSerializer(data=request.data)
@@ -473,6 +488,10 @@ class LoginAPIView(APIView):
 
 
 class GoogleAuthAPIView(APIView):
+    permission_classes = (AllowAny,)
+    parser_classes = (JSONParser,)
+
+    @google_auth_schema
     def post(self, request):
         serializer = GoogleAuthSerializer(data=request.data)
         if serializer.is_valid():
@@ -532,6 +551,26 @@ class WellnessDashboardAPIView(APIView):
             days = 7
         days = max(1, min(days, 30))
         payload = build_wellness_dashboard(request.user, days=days)
+        from users.openface_home_metrics import (
+            build_emotional_resilience_window,
+            latest_predicted_emotion,
+        )
+
+        payload["emotional_resilience_days"] = build_emotional_resilience_window(
+            request.user, days=3
+        )
+        payload["latest_emotion"] = latest_predicted_emotion(request.user)
+        try:
+            from face_detection.facial_expression_service import (
+                submit_incomplete_batch_recovery,
+            )
+
+            submit_incomplete_batch_recovery(limit=5)
+        except Exception:
+            pass
+        mh = payload.get("mental_health") or {}
+        if isinstance(mh, dict):
+            payload["openface_capture_count"] = int(mh.get("openface_capture_count") or 0)
         try:
             from users.services.notification_service import notify_low_wellbeing
 

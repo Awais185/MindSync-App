@@ -137,12 +137,14 @@ def _mental_averages(user, start_at, end_at) -> tuple[float, float, float]:
             round(sum(anx_vals) / len(anx_vals), 1),
             round(sum(dep_vals) / len(dep_vals), 1),
         )
-    mh = compute_mental_health_scores(user)
+    window_days = max(1, (end_at - start_at).days + 1)
+    mh = compute_mental_health_scores(user, window_days=window_days)
     if mh.get('has_data'):
+        anx = mh.get("anxiety") or {}
         return (
-            float(mh['stress']['score']),
-            float(mh['anxiety']['score']),
-            float(mh['depression']['score']),
+            float(mh["stress"]["score"]),
+            float(anx.get("score") or 0),
+            float(mh["depression"]["score"]),
         )
     return 0.0, 0.0, 0.0
 
@@ -303,9 +305,20 @@ def build_analytics_dashboard(user, period: str = 'week') -> dict:
         period = 'week'
 
     _, days_n, start_day, end_day, start_at, end_at, day_list = _window(period)
-    wellness = build_wellness_dashboard(user, days=days_n)
-    wellbeing = int(wellness.get('wellbeing_score') or 0)
-    stress, anxiety, depression = _mental_averages(user, start_at, end_at)
+    report_days = 7 if period == 'week' else days_n
+    wellness_report = build_wellness_dashboard(user, days=report_days)
+    wellness_home = build_wellness_dashboard(user, days=3)
+    wellbeing = int(wellness_report.get('wellbeing_score') or 0)
+    mh = wellness_home.get('mental_health') or {}
+    if mh.get('has_data'):
+        stress = float(mh['stress']['score'])
+        depression = float(mh['depression']['score'])
+    else:
+        stress = float(wellness_home.get('stress_indicator') or 0)
+        depression = float(wellness_home.get('depression_indicator') or 0)
+    from users.openface_home_metrics import latest_predicted_emotion
+
+    latest_emotion = latest_predicted_emotion(user)
 
     sleep_min = _sleep_minutes_for_period(user, period, end_day, day_list)
     mood_score, mood_caption = _mood_score_period(user, start_at, end_at)
@@ -327,8 +340,8 @@ def build_analytics_dashboard(user, period: str = 'week') -> dict:
         'mindsync_index': {
             'wellbeing_score': wellbeing,
             'stress_avg': stress,
-            'anxiety_avg': anxiety,
             'depression_avg': depression,
+            'latest_emotion': latest_emotion,
             'trend_points_vs_prior': trend,
         },
         'behavior': {

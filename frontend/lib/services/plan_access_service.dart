@@ -96,19 +96,5 @@ class PlanAccessService {
       'parental_control',
       'full_app_access',
     },
-    'doctor': {
-      'full_app_access',
-      'doctor_patient_inbox',
-      'doctor_appointments',
-      'doctor_patient_assist',
-      'mental_health_monitoring',
-      'weekly_reports',
-      'advanced_ai_insights',
-      'priority_support',
-      'no_ads',
-      'screen_time',
-      'content_monitoring',
-      'analytics_day_week_month',
-    },
   };
 }

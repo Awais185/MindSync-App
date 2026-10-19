@@ -3,6 +3,8 @@ from rest_framework import permissions, response, status, views
 
 from users.models import UserNotification
 from users.services.notification_service import (
+    notify_parent_bedtime,
+    notify_parent_wakeup,
     run_automatic_triggers,
     serialize_notification,
 )
@@ -74,6 +76,25 @@ class NotificationBulkDeleteAPIView(views.APIView):
             id__in=ids,
         ).delete()
         return response.Response({'ok': True, 'deleted': deleted})
+
+
+class ParentScheduleNotificationAPIView(views.APIView):
+    """Bedtime / wake-up reminders from the device schedule."""
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        kind = (request.data.get('kind') or '').strip().lower()
+        if kind == 'bedtime':
+            created = notify_parent_bedtime(request.user)
+        elif kind == 'wakeup':
+            created = notify_parent_wakeup(request.user)
+        else:
+            return response.Response(
+                {'detail': 'kind must be bedtime or wakeup.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return response.Response({'ok': True, 'created': created})
 
 
 class NotificationSyncTriggersAPIView(views.APIView):

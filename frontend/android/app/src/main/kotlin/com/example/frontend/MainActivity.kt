@@ -185,7 +185,8 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(true)
                     }
                     "openScreenCaptureSettings" -> {
-                        launchScreenCaptureConsentActivity(result)
+                        ScreenCaptureSettingsHelper.openMindSyncInSystemSettings(applicationContext)
+                        result.success(true)
                     }
                     "launchScreenCaptureConsentActivity" -> {
                         launchScreenCaptureConsentActivity(result)
@@ -334,6 +335,34 @@ class MainActivity : FlutterFragmentActivity() {
                                 "expiresAtMs" to if (active) setAt + TrackerPrefs.USAGE_HEALTH_LIMIT_EXPIRY_MS else 0L,
                             ),
                         )
+                    }
+                    "ensureParentalEnforcementEnabled" -> {
+                        if (TrackerPrefs.shouldAllowUsageCollection(applicationContext)) {
+                            TrackerPrefs.setParentalEnforcementEnabled(applicationContext, true)
+                            if (TrackerPrefs.hasActiveAppBlockingRules(applicationContext)) {
+                                AppBlockerService.start(applicationContext)
+                                BackgroundUsageService.start(applicationContext)
+                                BackgroundUsageService.requestImmediateEnforcement(applicationContext)
+                            }
+                        }
+                        result.success(true)
+                    }
+                    "scheduleBedtimeNotifications" -> {
+                        val args = call.arguments as? Map<*, *>
+                        if (args != null) {
+                            val sleepH = (args["sleepHour"] as? Number)?.toInt() ?: 22
+                            val sleepM = (args["sleepMinute"] as? Number)?.toInt() ?: 0
+                            val wakeH = (args["wakeHour"] as? Number)?.toInt() ?: 7
+                            val wakeM = (args["wakeMinute"] as? Number)?.toInt() ?: 0
+                            BedtimeScheduleHelper.schedule(
+                                applicationContext,
+                                sleepHour = sleepH,
+                                sleepMinute = sleepM,
+                                wakeHour = wakeH,
+                                wakeMinute = wakeM,
+                            )
+                        }
+                        result.success(true)
                     }
                     "setBlockedAppNow" -> {
                         val args = call.arguments as? Map<*, *>
@@ -573,7 +602,15 @@ class MainActivity : FlutterFragmentActivity() {
                         val pkgs =
                             raw?.mapNotNull { it as? String }?.filter { it.isNotBlank() }
                                 ?: emptyList()
-                        TrackerPrefs.setHomeBlockedPackages(applicationContext, pkgs.toSet())
+                        TrackerPrefs.replaceParentBlockedPackages(
+                            applicationContext,
+                            pkgs.toSet(),
+                        )
+                        if (pkgs.isNotEmpty() &&
+                            TrackerPrefs.shouldAllowUsageCollection(applicationContext)
+                        ) {
+                            TrackerPrefs.setParentalEnforcementEnabled(applicationContext, true)
+                        }
                         if (pkgs.isEmpty()) {
                             AppBlockerService.stop(applicationContext)
                         } else {

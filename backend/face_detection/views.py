@@ -18,12 +18,47 @@ from chat.video_model import analyze_video_file_path as chat_analyze_video_file_
 from .emotion_models import predict_image_pil, predict_video_path
 from .face_verification_service import DEFAULT_THRESHOLD
 from .profile_face_verify import verify_probe_for_user
+from .json_safe import finite_float, json_safe_payload
 from .models import FaceSnapshot, MentalHealthResult
 from subscriptions.constants import PLAN_FREE
 from subscriptions.services import SubscriptionService
 from subscriptions.permissions import require_subscription_feature
 
 logger = logging.getLogger(__name__)
+
+
+def _is_openface_analysis_source(source: str | None) -> bool:
+    s = (source or "").strip().lower()
+    return s == "openface" or s.startswith("openface_")
+
+
+def _mood_behavior_insights(mood: dict) -> list[str]:
+    if not isinstance(mood, dict):
+        return ["Emotion model results are not available for this scan."]
+    if mood.get("error"):
+        return [
+            "Emotion model could not run on this video. "
+            "Try brighter lighting and a steady front-facing clip."
+        ]
+    pred = mood.get("prediction") or mood.get("dominant")
+    if not pred:
+        return [
+            "No dominant emotion detected — face may be occluded or too few frames were sampled."
+        ]
+    conf = mood.get("confidence")
+    frames = int(mood.get("frame_count") or 0)
+    line = f"Adult emotion model: {pred}"
+    if conf is not None:
+        try:
+            c = float(conf)
+            pct = c * 100.0 if c <= 1.0 else c
+            line += f" ({pct:.0f}% avg confidence)"
+        except (TypeError, ValueError):
+            pass
+    line += f" across {frames} sampled frame(s)." if frames > 0 else "."
+    return [line]
+
+
 from .openface_pipeline import (
     OpenFaceAnalysisResult,
     _count_readable_frames,
@@ -179,10 +214,13 @@ class FaceVerifyAndTrackView(views.APIView):
                 try:
                     from .mood_scan_service import run_image_mood_on_match
 
+                    mood_source = (
+                        "unlock_verify" if unlock_capture else "verify_track"
+                    )
                     mood_payload = run_image_mood_on_match(
                         user,
                         uploaded,
-                        source="verify_track",
+                        source=mood_source,
                     )
                 except Exception as mood_exc:
                     logger.warning("Mood scan after match failed: %s", mood_exc)
@@ -404,6 +442,10 @@ class FaceBehaviorAnalyzeView(views.APIView):
 
             openface_host = is_openface_available()
             if openface_host:
+                logger.info(
+                    "behavior/analyze: OpenFace pipeline (video → CSV → depression MLP) user=%s",
+                    request.user.id,
+                )
                 analysis = run_openface_and_analyze(
                     input_video_path=prepared_path,
                     max_peak_frames=3,
@@ -413,6 +455,11 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     use_depression_model=True,
                 )
             else:
+                logger.warning(
+                    "behavior/analyze: OpenFace not available — depression screening "
+                    "requires FeatureExtraction.exe (Windows). user=%s",
+                    request.user.id,
+                )
                 logger.info(
                     "behavior/analyze: AU video tracker (user=%s) warmup=%s",
                     request.user.id,
@@ -435,6 +482,8 @@ class FaceBehaviorAnalyzeView(views.APIView):
                         budget_mode=False,
                     )
             scores = dict(analysis.scores) if isinstance(analysis.scores, dict) else {}
+            analysis_src = str(scores.get("analysis_source") or "")
+            model_only = not openface_host and not _is_openface_analysis_source(analysis_src)
 
             mood: dict = {}
             try:
@@ -442,23 +491,31 @@ class FaceBehaviorAnalyzeView(views.APIView):
 
                 mood = adult_emotion_video(
                     prepared_path,
-                    max_frames=4,
-                    sample_fps=0.35,
+                    max_frames=24,
+                    sample_fps=1.25,
                 )
             except Exception as mood_exc:
                 logger.warning("behavior/analyze emotion ensemble failed: %s", mood_exc)
                 mood = {"error": "emotion_model_failed", "detail": str(mood_exc)[:300]}
 
             depression_payload = dict(scores.get("depression_model") or {})
-            if not depression_payload and not openface_host:
-                depression_payload = {
-                    "error": "openface_unavailable",
-                    "message": (
-                        "Depression screening needs OpenFace on the server. "
-                        "Emotion results are still available."
-                    ),
-                }
-            if scores.get("depression_score") is not None:
+            if not depression_payload.get("predicted_label"):
+                if openface_host:
+                    depression_payload.setdefault(
+                        "message",
+                        "OpenFace ran but depression screening did not return a class label.",
+                    )
+                else:
+                    depression_payload = {
+                        "error": "openface_required",
+                        "message": (
+                            "Adult depression screening needs OpenFace: upload a ~30s video, "
+                            "run FeatureExtraction on the server, then pass the AU CSV to the MLP. "
+                            "Install OpenFace on Windows or set OPENFACE_FEATURE_EXTRACTION_EXE."
+                        ),
+                        "input_source": "none",
+                    }
+            if not model_only and scores.get("depression_score") is not None:
                 depression_payload.setdefault(
                     "depression_score", int(scores.get("depression_score") or 0)
                 )
@@ -469,19 +526,37 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     "anxiety_score", int(scores.get("anxiety_score") or 0)
                 )
 
-            dominant_state = str(scores.get("dominant_state") or "neutral").strip().lower()
+            mood_pred = mood.get("prediction") or mood.get("dominant")
+            if mood_pred:
+                dominant_state = str(mood_pred).strip().lower()
+            else:
+                dominant_state = str(scores.get("dominant_state") or "neutral").strip().lower()
+
+            behavioral_insights = (
+                _mood_behavior_insights(mood)
+                if model_only
+                else list(analysis.behavioral_insights or [])
+            )
+            recommendations = (
+                list(scores.get("recommendations") or analysis.recommendations or [])
+                if model_only
+                else list(analysis.recommendations or [])
+            )
+            au_summary = [] if model_only else list(analysis.au_summary or [])
 
             openface_summary = {
-                "active_aus": scores.get("active_aus") or [],
-                "state_probabilities": scores.get("state_probabilities") or {},
-                "matched_aus_by_state": scores.get("matched_aus_by_state") or {},
+                "active_aus": [] if model_only else (scores.get("active_aus") or []),
+                "state_probabilities": {}
+                if model_only
+                else (scores.get("state_probabilities") or {}),
+                "matched_aus_by_state": {}
+                if model_only
+                else (scores.get("matched_aus_by_state") or {}),
                 "dominant_states": scores.get("dominant_states") or [],
-                "max_score": int(scores.get("max_score") or 0),
+                "max_score": 0 if model_only else int(scores.get("max_score") or 0),
                 "face_visibility_ratio": float(analysis.face_visibility_ratio),
-                "au_summary": analysis.au_summary if isinstance(analysis.au_summary, list) else [],
-                "recommendations": analysis.recommendations
-                if isinstance(analysis.recommendations, list)
-                else [],
+                "au_summary": au_summary,
+                "recommendations": recommendations,
             }
 
             result = None
@@ -495,7 +570,7 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     dominant_state=dominant_state,
                     source_type=source_type,
                     scan_type=scan_type,
-                    behavioral_insights=analysis.behavioral_insights,
+                    behavioral_insights=behavioral_insights,
                     reaction_app_name=source_app_name,
                     reaction_package_name=source_package_name,
                     openface_summary=openface_summary,
@@ -550,12 +625,11 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     except Exception:
                         continue
 
-            stress_i = int(scores.get("stress_score") or 0)
-            anxiety_i = int(scores.get("anxiety_score") or 0)
-            depression_i = int(scores.get("depression_score") or 0)
+            stress_i = 0 if model_only else int(scores.get("stress_score") or 0)
+            anxiety_i = 0 if model_only else int(scores.get("anxiety_score") or 0)
+            depression_i = 0 if model_only else int(scores.get("depression_score") or 0)
             emotion_summary = mood.get("summary") if isinstance(mood.get("summary"), dict) else {}
-            return response.Response(
-                {
+            payload = {
                     "id": result.id if result else None,
                     "persisted": persist,
                     "timestamp": (
@@ -580,15 +654,24 @@ class FaceBehaviorAnalyzeView(views.APIView):
                         "dominant_states": scores.get("dominant_states") or [],
                         "max_score": int(scores.get("max_score") or 0),
                     },
-                    "active_aus": scores.get("active_aus") or [],
-                    "matched_aus_by_state": scores.get("matched_aus_by_state") or {},
-                    "au_disease_table": scores.get("au_disease_table") or {},
-                    "state_probabilities": scores.get("state_probabilities") or {},
-                    "face_visibility_ratio": analysis.face_visibility_ratio,
+                    "active_aus": [] if model_only else (scores.get("active_aus") or []),
+                    "matched_aus_by_state": {}
+                    if model_only
+                    else (scores.get("matched_aus_by_state") or {}),
+                    "au_disease_table": {}
+                    if model_only
+                    else (scores.get("au_disease_table") or {}),
+                    "state_probabilities": {}
+                    if model_only
+                    else (scores.get("state_probabilities") or {}),
+                    "face_visibility_ratio": finite_float(
+                        analysis.face_visibility_ratio, 0.0
+                    ),
                     "face_visible": analysis.face_visibility_ratio >= 0.01,
-                    "behavioral_insights": analysis.behavioral_insights,
-                    "au_summary": analysis.au_summary,
-                    "recommendations": analysis.recommendations,
+                    "behavioral_insights": behavioral_insights,
+                    "au_summary": au_summary,
+                    "recommendations": recommendations,
+                    "model_only_pipeline": model_only,
                     "analyzed_video_url": analyzed_video_url,
                     "peak_snapshots": created_snapshots,
                     "fast_mode": fast_mode,
@@ -603,9 +686,13 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     "web_style_prediction": mood.get("prediction"),
                     "web_style_confidence": mood.get("confidence"),
                     "web_style_summary": emotion_summary,
+                    "emotion_label": mood.get("prediction") or mood.get("dominant"),
+                    "depression_screening_label": depression_payload.get("predicted_label"),
+                    "emotion_model": mood.get("model") or "tri_architecture_ensemble",
+                    "depression_model_name": "adult_depression_mlp",
                     "analysis_source": scores.get("analysis_source")
                     or ("openface" if openface_host else "au_video_tracker"),
-                    "pipeline": "unified_openface_dual_model",
+                    "pipeline": "unified_adult_emotion_depression",
                     "pipeline_preprocessing": {
                         "prefer_reencode": True,
                         "scan_type": scan_type,
@@ -618,7 +705,9 @@ class FaceBehaviorAnalyzeView(views.APIView):
                     "reaction_app_name": source_app_name,
                     "reaction_package_name": source_package_name,
                     "openface_summary": openface_summary,
-                },
+                }
+            return response.Response(
+                json_safe_payload(payload),
                 status=status.HTTP_200_OK,
             )
         except RuntimeError as e:

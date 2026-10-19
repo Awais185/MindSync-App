@@ -56,6 +56,22 @@ def build_seven_day_report_payload(
     if include_premium_insights is None:
         include_premium_insights = SubscriptionService.current_plan_code(user) == 'premium'
 
+    from users.mental_health_scoring import compute_mental_health_scores
+    from users.openface_home_metrics import latest_predicted_emotion
+    from users.wellbeing import build_wellness_dashboard
+
+    wellness_block = build_wellness_dashboard(user, days=7)
+    mh_scores = compute_mental_health_scores(user, window_days=7)
+    wellbeing_snapshot = {
+        'wellbeing_score': int(wellness_block.get('wellbeing_score') or 0),
+        'mental_health_score': int(wellness_block.get('mental_health_score') or 0),
+        'stress': float((mh_scores.get('stress') or {}).get('score') or 0),
+        'depression': float((mh_scores.get('depression') or {}).get('score') or 0),
+        'latest_emotion': latest_predicted_emotion(user),
+        'has_mental_health_data': bool(mh_scores.get('has_data')),
+        'has_wellbeing_signal': bool(wellness_block.get('has_wellbeing_signal')),
+    }
+
     screen_rows = ScreenTime.objects.filter(user=user, date__range=(start_day, end_day))
     screen_map = {row.date: row for row in screen_rows}
 
@@ -131,8 +147,19 @@ def build_seven_day_report_payload(
         )
         stability_score = int(_clamp(100 - (stress_score * 0.72), 20, 92))
         productivity_score = int(_clamp(82 - (screen_hours * 5.5) - (night_intensity * 18), 22, 90))
-        sleep_hours = _clamp(8.1 - max(0, screen_hours - 4) * 0.3 - (night_intensity * 1.4), 4.5, 8.6)
-        sleep_score = int(_clamp((sleep_hours / 8.0) * 100, 40, 100))
+        sleep_seconds_tracked = int(screen.sleep_time) if screen and screen.sleep_time else 0
+        if sleep_seconds_tracked > 0:
+            sleep_hours = sleep_seconds_tracked / 3600.0
+            sleep_score = int(_clamp((sleep_hours / 8.0) * 100, 40, 100))
+            sleep_data_source = 'screen_time_table'
+        else:
+            sleep_hours = _clamp(
+                8.1 - max(0, screen_hours - 4) * 0.3 - (night_intensity * 1.4),
+                4.5,
+                8.6,
+            )
+            sleep_score = int(_clamp((sleep_hours / 8.0) * 100, 40, 100))
+            sleep_data_source = 'estimated'
 
         stress_level = severity_label_from_percent(stress_score)
         if stress_score >= 76:
@@ -155,12 +182,9 @@ def build_seven_day_report_payload(
         else:
             productivity_level = 'Low'
 
-        if late_night_seconds > 3600:
-            sleep_start = '12:45 AM'
-        elif late_night_seconds > 1200:
-            sleep_start = '11:45 PM'
-        else:
-            sleep_start = '10:45 PM'
+        sleep_start = ''
+        if sleep_seconds_tracked > 0:
+            sleep_start = 'Tracked (10 PM–6 AM window)'
 
         note = (
             f"{message_counts.get(current_day, 0)} chat interactions, "
@@ -177,6 +201,7 @@ def build_seven_day_report_payload(
                 'video_watch_time': video_seconds,
                 'sleep_time_hours': round(float(sleep_hours), 2),
                 'sleep_start': sleep_start,
+                'sleep_data_source': sleep_data_source,
                 'dominant_mood': dominant_mood,
                 'stress_level': stress_level,
                 'stress_score': stress_score,
@@ -249,7 +274,6 @@ def build_seven_day_report_payload(
         insights.append('Lower screen-time days correlate with better emotional balance and productivity.')
     if avg_sleep_score < 68:
         insights.append('Sleep irregularity may be contributing to anxiety-linked behavioral patterns.')
-    insights.append('Digital fatigue signs appear around mid-week based on trend compression and night activity.')
 
     try:
         from users.services.mood_weekly_service import build_weekly_mood_payload
@@ -280,16 +304,15 @@ def build_seven_day_report_payload(
         row['date']: int(row.get('seconds') or 0)
         for row in (chunk_analytics.get('screen_time') or {}).get('daily') or []
     }
-    chunk_stress_by_date = {
-        row['date']: row.get('stress')
-        for row in (chunk_analytics.get('mental_health') or {}).get('weekly_trend') or []
-    }
-
     for dr, bd in zip(day_reports, condition_breakdown.get('days', [])):
-        for key in ('stress', 'anxiety', 'depression'):
+        for key in ('stress', 'depression'):
             val = bd.get(key)
             if val is not None:
                 dr[f'{key}_score'] = int(round(float(val)))
+        emo = bd.get('emotion')
+        if emo:
+            dr['emotion'] = str(emo)
+            dr['dominant_mood'] = str(emo)
         day_iso = dr.get('date')
         chunk_sec = chunk_screen_daily.get(day_iso, 0)
         screen_sec = bd.get('screen_time_seconds')
@@ -299,10 +322,6 @@ def build_seven_day_report_payload(
         elif screen_sec is not None and int(screen_sec) > 0:
             dr['total_screen_time'] = int(screen_sec)
             dr['screen_time_source'] = 'screen_time_table'
-        chunk_stress = chunk_stress_by_date.get(day_iso)
-        if chunk_stress is not None and dr.get('stress_score') is None:
-            dr['stress_score'] = int(round(float(chunk_stress)))
-
     chunk_hours = [
         round((chunk_screen_daily.get(d.isoformat(), 0) / 3600.0), 2) for d in days
     ]
@@ -310,15 +329,13 @@ def build_seven_day_report_payload(
         screen_time_trend = chunk_hours
         avg_screen_seconds = int(sum(d['total_screen_time'] for d in day_reports) / 7)
 
-    chunk_stress_trend = []
-    for row in (chunk_analytics.get('mental_health') or {}).get('weekly_trend') or []:
-        val = row.get('stress')
-        if val is None:
-            chunk_stress_trend.append(None)
+    depression_trend: list[int | None] = []
+    for row in (condition_breakdown.get('days') or []):
+        if isinstance(row, dict):
+            dep = row.get('depression')
+            depression_trend.append(int(round(float(dep))) if dep is not None else None)
         else:
-            chunk_stress_trend.append(int(round(float(val))))
-    if any(v is not None for v in chunk_stress_trend):
-        stress_trend = [int(v) if v is not None else stress_trend[i] for i, v in enumerate(chunk_stress_trend)]
+            depression_trend.append(None)
 
     content_items = (chunk_analytics.get('content_type') or {}).get('items') or []
     if content_items and not insights:
@@ -331,7 +348,29 @@ def build_seven_day_report_payload(
     if mh_summary and mh_summary not in insights:
         insights.append(str(mh_summary))
 
+    tracked_sleep_nights = sum(
+        1 for d in day_reports if d.get('sleep_data_source') == 'screen_time_table'
+    )
+    total_late_night_sec = sum(int(d.get('late_night_usage_seconds') or 0) for d in day_reports)
+
+    draft_payload = {
+        'wellbeing_snapshot': wellbeing_snapshot,
+        'user': {
+            'full_name': f'{user.first_name} {user.last_name}'.strip() or user.username,
+            'report_period': f'{start_day.isoformat()} to {end_day.isoformat()}',
+        },
+        'seven_day_data': day_reports,
+        'analytics': {'progress_cards': {'avg_sleep_score': avg_sleep_score}},
+        'condition_breakdown': condition_breakdown,
+        'ai_insights': insights,
+        'risk_level': risk_level,
+    }
+    from users.services.weekly_report_ai import generate_weekly_recommendations
+
+    ai_recommendations = generate_weekly_recommendations(user, draft_payload)
+
     return {
+        'wellbeing_snapshot': wellbeing_snapshot,
         'user': {
             'full_name': f'{user.first_name} {user.last_name}'.strip() or user.username,
             'user_id': user.id,
@@ -349,6 +388,23 @@ def build_seven_day_report_payload(
             'screen_time_hours': screen_time_trend,
             'social_media_hours': social_trend,
             'late_night_usage_hours': late_night_trend,
+            'depression_trend': depression_trend,
+            'sleep_tracking': {
+                'tracked_nights': tracked_sleep_nights,
+                'total_late_night_hours': round(total_late_night_sec / 3600.0, 2),
+                'daily': [
+                    {
+                        'date': d['date'],
+                        'sleep_hours': d.get('sleep_time_hours'),
+                        'sleep_tracked': d.get('sleep_data_source') == 'screen_time_table',
+                        'late_night_hours': round(
+                            int(d.get('late_night_usage_seconds') or 0) / 3600.0,
+                            2,
+                        ),
+                    }
+                    for d in day_reports
+                ],
+            },
             'app_usage_distribution_seconds': app_distribution,
             'progress_cards': {
                 'avg_screen_time': _seconds_to_hm(avg_screen_seconds),
@@ -371,19 +427,7 @@ def build_seven_day_report_payload(
         'mood_weekly': mood_weekly,
         'condition_breakdown': condition_breakdown,
         'chunk_analytics': chunk_analytics,
-        'recommendations': {
-            'for_user': [
-                'Reduce screen use after 10 PM and use wind-down reminders.',
-                'Maintain a fixed sleep schedule across weekdays and weekends.',
-                'Take short breaks from scrolling every 30-40 minutes.',
-                'Include one daily offline restorative activity.',
-            ],
-            'for_psychologist': [
-                'Review mood fluctuation trends around high night-usage windows.',
-                'Assess sleep hygiene and consistency over the weekly cycle.',
-                'Observe possible anxiety triggers linked to social media bursts.',
-            ],
-        },
+        'recommendations': ai_recommendations,
     }
 
 

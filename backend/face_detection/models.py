@@ -182,8 +182,13 @@ class FacialExpressionCapture(models.Model):
     processing_error = models.TextField(blank=True, default="")
 
     stress_score = models.PositiveSmallIntegerField(default=0)
-    anxiety_score = models.PositiveSmallIntegerField(default=0)
     depression_score = models.PositiveSmallIntegerField(default=0)
+    emotion = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Adult emotion model label from background video processing.",
+    )
     dominant_state = models.CharField(max_length=32, default="neutral", db_index=True)
     active_aus = models.JSONField(default=list, blank=True)
     au_results = models.JSONField(null=True, blank=True)

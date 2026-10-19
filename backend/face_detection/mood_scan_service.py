@@ -14,7 +14,16 @@ from .models import FaceMoodScan
 
 MOOD_SCAN_COOLDOWN = timedelta(minutes=5)
 
+# Device unlock / verify-track always saves mood for the weekly graph.
+_UNLOCK_MOOD_SOURCES = frozenset(
+    {"verify_track", "unlock", "unlock_verify", "background", "expression_upload"}
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _bypass_mood_cooldown(source: str) -> bool:
+    return (source or "").strip().lower() in _UNLOCK_MOOD_SOURCES
 
 
 def mood_success_message(mood: dict[str, Any], modality: str) -> str:
@@ -44,6 +53,14 @@ def mood_success_message(mood: dict[str, Any], modality: str) -> str:
     if modality == FaceMoodScan.MODALITY_VIDEO:
         return f"Video analyzed — mood: {pred_str}{conf_part}"
     return f"Mood: {pred_str}{conf_part}"
+
+
+def public_mood_payload(mood: dict[str, Any]) -> dict[str, Any]:
+    """API/UI shape: no full class distribution blob; keep ensemble + majority fields."""
+    if not isinstance(mood, dict):
+        return {}
+    skip = frozenset({"probabilities"})
+    return {k: v for k, v in mood.items() if k not in skip}
 
 
 def analyze_image_bytes(image_bytes: bytes, filename: str = "capture.jpg") -> dict[str, Any]:
@@ -171,8 +188,8 @@ def _persist_background_metrics(
     persist_background_emotion_session(
         user,
         mood_label=label,
+        emotion=label,
         stress=stress,
-        anxiety=anxiety,
         depression=depression_i,
         source=source,
         probabilities=mood.get("probabilities") if isinstance(mood.get("probabilities"), dict) else None,
@@ -186,19 +203,16 @@ def run_image_mood_on_match(
     from .user_ml_policy import user_allows_adult_ml
 
     if not user_allows_adult_ml(user):
+        logger.info("Image mood skipped for user %s: age_policy", user.id)
         return {
             "skipped": True,
             "reason": "age_policy",
             "message": "Mood models are enabled for users over 16 only.",
         }
-    if is_mood_scan_cooldown_active(user):
+    if not _bypass_mood_cooldown(source) and is_mood_scan_cooldown_active(user):
         return mood_cooldown_skip_payload(user)
     try:
-        from .dual_model_service import analyze_manual_image
-
-        dual = analyze_manual_image(image_bytes)
-        mood = dual.get("mood") or analyze_image_bytes(image_bytes)
-        depression = dual.get("depression") if isinstance(dual.get("depression"), dict) else None
+        mood = public_mood_payload(analyze_image_bytes(image_bytes))
         row = save_face_mood_scan(
             user,
             mood=mood,
@@ -207,13 +221,8 @@ def run_image_mood_on_match(
             image_bytes=image_bytes,
             source=source,
         )
-        _persist_background_metrics(
-            user, mood, source=source, depression=depression, image_bytes=image_bytes
-        )
-        out = _enrich_mood_response(mood, row)
-        if depression:
-            out["depression"] = depression
-        return out
+        _persist_background_metrics(user, mood, source=source, image_bytes=image_bytes)
+        return _enrich_mood_response(mood, row)
     except Exception as exc:
         logger.exception("Image mood on match failed for user %s: %s", user.id, exc)
         return None
@@ -225,21 +234,18 @@ def run_video_mood_on_match(
     from .user_ml_policy import user_allows_adult_ml
 
     if not user_allows_adult_ml(user):
+        logger.info("Image mood skipped for user %s: age_policy", user.id)
         return {
             "skipped": True,
             "reason": "age_policy",
             "message": "Mood models are enabled for users over 16 only.",
         }
-    if is_mood_scan_cooldown_active(user):
+    if not _bypass_mood_cooldown(source) and is_mood_scan_cooldown_active(user):
         return mood_cooldown_skip_payload(user)
     try:
-        from .dual_model_service import analyze_manual_video
-
-        dual = analyze_manual_video(video_path)
-        mood = dual.get("mood") or analyze_video_path(video_path)
+        mood = public_mood_payload(analyze_video_path(video_path))
         if mood.get("error"):
             return None
-        depression = dual.get("depression") if isinstance(dual.get("depression"), dict) else None
         row = save_face_mood_scan(
             user,
             mood=mood,
@@ -248,11 +254,8 @@ def run_video_mood_on_match(
             video_path=video_path,
             source=source,
         )
-        _persist_background_metrics(user, mood, source=source, depression=depression)
-        out = _enrich_mood_response(mood, row)
-        if depression:
-            out["depression"] = depression
-        return out
+        _persist_background_metrics(user, mood, source=source)
+        return _enrich_mood_response(mood, row)
     except Exception as exc:
         logger.exception("Video mood on match failed for user %s: %s", user.id, exc)
         return None

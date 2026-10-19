@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
@@ -659,6 +661,22 @@ class ScreenTimeService {
     } catch (_) {}
   }
 
+  /// Opens the OS settings screen for screen capture / special access (no in-app dialog).
+  Future<void> openScreenRecordingOsSettings() async {
+    if (kIsWeb) return;
+    try {
+      if (Platform.isAndroid) {
+        await _channel.invokeMethod('openAppInfoSettings');
+      } else if (Platform.isIOS) {
+        await openAppSettings();
+      }
+    } on MissingPluginException {
+      await openAppSettings();
+    } catch (_) {
+      await openAppSettings();
+    }
+  }
+
   Future<bool> ensureScreenCapturePermission() async {
     if (kIsWeb) return false;
     if (await hasScreenCapturePermission()) return true;
@@ -672,11 +690,11 @@ class ScreenTimeService {
     return ok;
   }
 
-  /// System screen-capture consent (MediaProjection), not application details.
+  /// Opens OS settings for screen capture (no in-app consent activity).
   Future<bool> openScreenCaptureSettings() async {
     if (kIsWeb) return false;
     if (await hasScreenCapturePermission()) return true;
-    await launchScreenCaptureConsent();
+    await openScreenRecordingOsSettings();
     await Future<void>.delayed(const Duration(milliseconds: 400));
     await _refresh();
     return await hasScreenCapturePermission();
@@ -753,7 +771,7 @@ class ScreenTimeService {
       }
 
       if (!kIsWeb || _backendRefreshCount % 2 == 0) {
-        await WellnessDashboardService.instance.refresh();
+        await WellnessDashboardService.instance.refreshHome();
       }
       if (!kIsWeb) {
         await flushMidnightScreenTimePending();

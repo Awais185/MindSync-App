@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import '../pages/report_screen.dart';
 import '../../widgets/mindsync_chat_charts.dart';
+import '../../widgets/mindsync_markdown_body.dart';
+import '../../services/api_client.dart';
 import '../../services/chat_behavior_context_service.dart';
 import '../../services/plan_access_service.dart';
-import '../../config/api_config.dart';
+import '../../utils/sanitize_chat_text.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -20,6 +20,13 @@ class ChatScreenState extends State<ChatScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   void openDrawer() => _scaffoldKey.currentState?.openDrawer();
+
+  /// Header “My Report” — same as the My Report quick chip (7-day MCP tool).
+  void openMyReportInChat() {
+    if (_isLoading) return;
+    _messageController.text = 'My Report';
+    unawaited(_sendMessage(tool: _toolSevenDayReport));
+  }
   final TextEditingController _messageController = TextEditingController();
   final List<ChatMessage> _messages = [];
   final List<Map<String, String>> _history = [];
@@ -55,25 +62,18 @@ class ChatScreenState extends State<ChatScreen> {
       });
   }
 
-  Future<Map<String, String>?> _authHeaders() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth.accessToken') ?? '';
-    if (token.isEmpty) return null;
-    return {
-      'Authorization': 'Bearer $token',
-      'Content-Type': 'application/json',
-    };
-  }
-
   Future<void> _fetchSessions() async {
-    final headers = await _authHeaders();
-    if (headers == null) return;
     if (mounted) setState(() => _loadingSessions = true);
     try {
-      final response = await http
-          .get(Uri.parse('${ApiConfig.baseUrl}/api/chat/sessions/'), headers: headers)
-          .timeout(const Duration(seconds: 15));
-      if (response.statusCode < 200 || response.statusCode >= 300) return;
+      final response = await ApiClient.instance.get(
+        '/api/chat/sessions/',
+        timeout: const Duration(seconds: 15),
+      );
+      if (response == null ||
+          response.statusCode < 200 ||
+          response.statusCode >= 300) {
+        return;
+      }
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       final items = (body['results'] as List<dynamic>? ?? const [])
           .cast<Map<String, dynamic>>()
@@ -93,8 +93,6 @@ class ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _deleteSession(ChatSessionItem session) async {
-    final headers = await _authHeaders();
-    if (headers == null) return;
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -114,12 +112,20 @@ class ChatScreenState extends State<ChatScreen> {
     );
     if (confirmed != true || !mounted) return;
     try {
-      final response = await http
-          .delete(
-            Uri.parse('${ApiConfig.baseUrl}/api/chat/sessions/${session.id}/'),
-            headers: headers,
-          )
-          .timeout(const Duration(seconds: 15));
+      final response = await ApiClient.instance.delete(
+        '/api/chat/sessions/${session.id}/',
+        timeout: const Duration(seconds: 15),
+      );
+      if (response == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not delete chat. Check connection.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
       if (response.statusCode != 204 && (response.statusCode < 200 || response.statusCode >= 300)) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -141,19 +147,17 @@ class ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _openSession(ChatSessionItem session) async {
-    final headers = await _authHeaders();
-    if (headers == null) return;
     if (!mounted) return;
     Navigator.of(context).maybePop();
     setState(() => _isLoading = true);
     try {
-      final response = await http
-          .get(
-            Uri.parse('${ApiConfig.baseUrl}/api/chat/sessions/${session.id}/messages/'),
-            headers: headers,
-          )
-          .timeout(const Duration(seconds: 15));
-      if (response.statusCode < 200 || response.statusCode >= 300) {
+      final response = await ApiClient.instance.get(
+        '/api/chat/sessions/${session.id}/messages/',
+        timeout: const Duration(seconds: 15),
+      );
+      if (response == null ||
+          response.statusCode < 200 ||
+          response.statusCode >= 300) {
         if (!mounted) return;
         setState(() => _isLoading = false);
         return;
@@ -215,7 +219,9 @@ class ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _sendMessage() async {
+  static const String _toolSevenDayReport = 'seven_day_comprehensive_report';
+
+  Future<void> _sendMessage({String? tool}) async {
     final text = _messageController.text.trim();
     if (text.isEmpty || _isLoading) return;
     final canUseChat = await PlanAccessService.instance.canAccess(
@@ -244,7 +250,7 @@ class ChatScreenState extends State<ChatScreen> {
 
     // Scroll to bottom
     _scrollToBottom();
-    final response = await _fetchAssistantReply();
+    final response = await _fetchAssistantReply(tool: tool);
     if (!mounted) return;
     setState(() {
       _messages.add(
@@ -261,14 +267,7 @@ class ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
   }
 
-  Future<_AssistantFetchResult> _fetchAssistantReply() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth.accessToken') ?? '';
-    if (token.isEmpty) {
-      return const _AssistantFetchResult(
-        text: 'Session expired. Please login again.',
-      );
-    }
+  Future<_AssistantFetchResult> _fetchAssistantReply({String? tool}) async {
     try {
       final latestUserMessage =
           _history.lastWhere(
@@ -276,42 +275,59 @@ class ChatScreenState extends State<ChatScreen> {
             orElse: () => {'role': 'user', 'content': ''},
           )['content'] ??
           '';
-      final behaviorContext =
-          await ChatBehaviorContextService.instance.buildPayload();
-      final response = await http
-          .post(
-            Uri.parse('${ApiConfig.baseUrl}/api/chat/'),
-            headers: {
-              'Authorization': 'Bearer $token',
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode({
-              'message': latestUserMessage,
-              if (_sessionId != null) 'session_id': _sessionId,
-              'history': _history
-                  .where(
-                    (item) =>
-                        item['role'] == 'user' || item['role'] == 'assistant',
-                  )
-                  .toList(),
-              'behavior_context': behaviorContext,
-            }),
-          )
-          .timeout(const Duration(seconds: 20));
+      Map<String, dynamic> behaviorContext = const {'has_data': false};
+      try {
+        behaviorContext =
+            await ChatBehaviorContextService.instance
+                .buildPayload(forceRefresh: false)
+                .timeout(const Duration(seconds: 12));
+      } catch (_) {
+        behaviorContext = const {'has_data': false};
+      }
+
+      final response = await ApiClient.instance.post(
+        '/api/chat/',
+        body: {
+          'message': latestUserMessage,
+          if (_sessionId != null) 'session_id': _sessionId,
+          if (tool != null && tool.isNotEmpty) 'tool': tool,
+          'history': _history
+              .where(
+                (item) =>
+                    item['role'] == 'user' || item['role'] == 'assistant',
+              )
+              .toList(),
+          'behavior_context': behaviorContext,
+        },
+        timeout: const Duration(seconds: 90),
+      );
+
+      if (response == null) {
+        return const _AssistantFetchResult(text: kChatNetworkErrorMessage);
+      }
 
       if (response.statusCode == 401) {
         return const _AssistantFetchResult(
           text: 'Session expired. Please login again.',
         );
       }
-      if (response.statusCode < 200 || response.statusCode >= 300) {
+      if (response.statusCode == 403) {
         return const _AssistantFetchResult(
-          text: 'MindSync AI is temporarily unavailable. Please try again shortly.',
+          text: 'Upgrade your plan to access Digital Psychologist chat.',
+        );
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return _AssistantFetchResult(
+          text:
+              'MindSync AI is temporarily unavailable (HTTP ${response.statusCode}). '
+              'Please try again shortly.',
         );
       }
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
-      final reply = (data['reply'] ?? '').toString().trim();
+      final reply = sanitizeChatDisplayText(
+        (data['reply'] ?? '').toString().trim(),
+      );
       final charts = MindSyncChartSpec.listFromDynamic(
         data['charts'] as List<dynamic>?,
       );
@@ -328,12 +344,15 @@ class ChatScreenState extends State<ChatScreen> {
       return _AssistantFetchResult(text: reply, charts: charts);
     } on TimeoutException {
       return const _AssistantFetchResult(
-        text: 'The request timed out. Please check your internet and try again.',
+        text:
+            'The request timed out. The AI may still be working — try again in a moment.',
+      );
+    } on FormatException {
+      return const _AssistantFetchResult(
+        text: 'Received an invalid response from the server. Please try again.',
       );
     } catch (_) {
-      return const _AssistantFetchResult(
-        text: 'Network issue detected. Please check your internet and try again.',
-      );
+      return const _AssistantFetchResult(text: kChatNetworkErrorMessage);
     }
   }
 
@@ -349,9 +368,9 @@ class ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  void _sendQuickChip(String text) {
+  void _sendQuickChip(String text, {String? tool}) {
     _messageController.text = text;
-    _sendMessage();
+    _sendMessage(tool: tool);
   }
 
   @override
@@ -597,7 +616,9 @@ class ChatScreenState extends State<ChatScreen> {
           const SizedBox(height: 8),
           const _RoleLabel('ASSISTANT'),
           const SizedBox(height: 6),
-          _AssistantBubble(text: message.text),
+          _AssistantBubble(
+            text: sanitizeChatDisplayText(message.text),
+          ),
           if (message.charts.isNotEmpty)
             ...message.charts.map(
               (spec) => Padding(
@@ -654,10 +675,13 @@ class ChatScreenState extends State<ChatScreen> {
             onTap: () => _sendQuickChip('How can I focus?'),
           ),
           _QuickChip(
-            text: 'Morning routine',
+            text: 'My Report',
             bg: const Color(0xFFEAEFFB),
             fg: const Color(0xFF385A87),
-            onTap: () => _sendQuickChip('Morning routine'),
+            onTap: () => _sendQuickChip(
+              'My Report',
+              tool: _toolSevenDayReport,
+            ),
           ),
           _QuickChip(
             text: 'Breathing exercise',
@@ -836,38 +860,32 @@ class _AssistantBubble extends StatelessWidget {
           ),
         ],
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 3,
-            height: 80,
-            margin: const EdgeInsets.only(top: 2, bottom: 2),
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Color(0xFF6F39E8),
-                  Color(0xFF0E9186),
-                  Color(0xFF2E6FD2),
-                ],
-              ),
-              borderRadius: BorderRadius.all(Radius.circular(2)),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              text,
-              style: const TextStyle(
-                fontSize: 13,
-                height: 1.45,
-                color: Color(0xFF20222B),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              width: 3,
+              margin: const EdgeInsets.only(top: 2, bottom: 2),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Color(0xFF6F39E8),
+                    Color(0xFF0E9186),
+                    Color(0xFF2E6FD2),
+                  ],
+                ),
+                borderRadius: BorderRadius.all(Radius.circular(2)),
               ),
             ),
-          ),
-        ],
+            const SizedBox(width: 12),
+            Expanded(
+              child: MindSyncMarkdownBody(data: text),
+            ),
+          ],
+        ),
       ),
     );
   }

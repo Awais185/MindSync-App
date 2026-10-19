@@ -234,9 +234,9 @@ class StitchHeroCard extends StatelessWidget {
           const SizedBox(height: 14),
           _heroBar('Stress', s.stress, MentalHealthSeverity.stressInsightBarColor),
           const SizedBox(height: 8),
-          _heroBar('Anxiety', s.anxiety, MentalHealthSeverity.anxietyInsightBarColor),
-          const SizedBox(height: 8),
           _heroBar('Depression', s.depression, MentalHealthSeverity.depressionInsightBarColor),
+          const SizedBox(height: 8),
+          _emotionChip('Emotion', s.emotion.isNotEmpty ? s.emotion : s.moodStatus),
           const SizedBox(height: 10),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
@@ -265,6 +265,33 @@ class StitchHeroCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _emotionChip(String label, String value) {
+    final display = value.trim().isEmpty || value.toLowerCase() == 'no data'
+        ? '—'
+        : value.trim();
+    return Row(
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            color: Colors.white.withValues(alpha: 0.92),
+          ),
+        ),
+        const Spacer(),
+        Text(
+          display,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w800,
+            color: Colors.white,
+          ),
+        ),
+      ],
     );
   }
 
@@ -493,9 +520,8 @@ class StitchMentalStateChart extends StatelessWidget {
   final List<StudioDailyMental> days;
   final String? footer;
 
-  static const _stressColor = MentalHealthSeverity.stressInsightBarColor;
-  static const _anxietyColor = MentalHealthSeverity.anxietyInsightBarColor;
   static const _depressionColor = MentalHealthSeverity.depressionInsightBarColor;
+  static const _emotionColor = Color(0xFF9B8EC4);
 
   List<StudioDailyMental> get _normalizedDays {
     if (days.length >= 7) return days.take(7).toList();
@@ -507,9 +533,9 @@ class StitchMentalStateChart extends StatelessWidget {
           date: '',
           dayLabel: 'D${i + 1}',
           stress: null,
-          anxiety: null,
+          emotion: '',
           depression: null,
-        ),
+        ), // stress unused in chart — depression + emotion only
       );
     }
     return padded;
@@ -532,18 +558,17 @@ class StitchMentalStateChart extends StatelessWidget {
   }
 
   bool get _hasAnyData =>
-      _normalizedDays.any((d) => d.stress != null || d.anxiety != null || d.depression != null);
+      _normalizedDays.any((d) => d.depression != null || d.emotion.isNotEmpty);
 
   @override
   Widget build(BuildContext context) {
     final week = _normalizedDays;
     if (!_hasAnyData) {
-      return const StitchEmptyText('No daily mental health scores for this week yet.');
+      return const StitchEmptyText('No daily depression scores from face scans for this week yet.');
     }
 
-    final stressPts = week.map((d) => d.stress?.toDouble()).toList();
-    final anxietyPts = week.map((d) => d.anxiety?.toDouble()).toList();
     final depressionPts = week.map((d) => d.depression?.toDouble()).toList();
+    final emotionLabels = week.map((d) => d.emotion).toList();
     final xLabels = List.generate(week.length, (i) => _xLabel(week[i], i));
 
     return Column(
@@ -553,9 +578,8 @@ class StitchMentalStateChart extends StatelessWidget {
           spacing: 10,
           runSpacing: 6,
           children: const [
-            _ChartLegendDot(label: 'Stress', color: _stressColor),
-            _ChartLegendDot(label: 'Anxiety', color: _anxietyColor),
             _ChartLegendDot(label: 'Depression', color: _depressionColor),
+            _ChartLegendDot(label: 'Emotion', color: _emotionColor),
           ],
         ),
         const SizedBox(height: 10),
@@ -569,8 +593,6 @@ class StitchMentalStateChart extends StatelessWidget {
               Expanded(
                 child: CustomPaint(
                   painter: _MentalStateAxesPainter(
-                    stress: stressPts,
-                    anxiety: anxietyPts,
                     depression: depressionPts,
                   ),
                   child: const SizedBox.expand(),
@@ -594,6 +616,28 @@ class StitchMentalStateChart extends StatelessWidget {
                   ),
                 )
                 .toList(),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Padding(
+          padding: const EdgeInsets.only(left: 34),
+          child: Row(
+            children: List.generate(
+              emotionLabels.length,
+              (i) => Expanded(
+                child: Text(
+                  emotionLabels[i].isNotEmpty ? emotionLabels[i] : '—',
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 8,
+                    fontWeight: FontWeight.w700,
+                    color: _emotionColor,
+                  ),
+                ),
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 2),
@@ -656,13 +700,9 @@ class _ChartYAxis extends StatelessWidget {
 
 class _MentalStateAxesPainter extends CustomPainter {
   _MentalStateAxesPainter({
-    required this.stress,
-    required this.anxiety,
     required this.depression,
   });
 
-  final List<double?> stress;
-  final List<double?> anxiety;
   final List<double?> depression;
 
   @override
@@ -688,8 +728,6 @@ class _MentalStateAxesPainter extends CustomPainter {
       );
     }
 
-    _drawSeries(canvas, size, stress, MentalHealthSeverity.stressInsightBarColor);
-    _drawSeries(canvas, size, anxiety, MentalHealthSeverity.anxietyInsightBarColor);
     _drawSeries(canvas, size, depression, MentalHealthSeverity.depressionInsightBarColor);
   }
 
@@ -860,34 +898,113 @@ class StitchProgressRow extends StatelessWidget {
   }
 }
 
-/// Sleep & trigger mood — weekday letters + dots (sample).
-class StitchWeekdayDotStrip extends StatelessWidget {
-  const StitchWeekdayDotStrip({super.key, this.labels = const ['M', 'T', 'W', 'T', 'F', 'S', 'S']});
-  final List<String> labels;
+/// Tracked sleep hours + late-night usage per day (from weekly report API).
+class StitchSleepLateNightWeek extends StatelessWidget {
+  const StitchSleepLateNightWeek({super.key, required this.days});
+  final List<StudioSleepDay> days;
+
+  String _weekday(String iso) {
+    if (iso.length < 10) return '—';
+    try {
+      final dt = DateTime.parse(iso);
+      const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      return names[dt.weekday - 1];
+    } catch (_) {
+      return '—';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: labels
-          .map(
-            (l) => Expanded(
-              child: Column(
-                children: [
-                  Text(l, style: const TextStyle(fontSize: 9, color: ReportStudioTheme.muted)),
-                  const SizedBox(height: 6),
-                  Container(
-                    width: 5,
-                    height: 5,
-                    decoration: const BoxDecoration(
-                      color: ReportStudioTheme.muted,
-                      shape: BoxShape.circle,
+    if (days.isEmpty) {
+      return const StitchEmptyText('No sleep or late-night data for this week yet.');
+    }
+    final maxSleep = days.map((d) => d.sleepHours).fold<double>(0, (a, b) => a > b ? a : b);
+    final maxLate = days.map((d) => d.lateNightHours).fold<double>(0, (a, b) => a > b ? a : b);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Sleep (tracked nights) · Late night (10 PM–6 AM)',
+          style: TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: ReportStudioTheme.muted),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: List.generate(days.length, (i) {
+            final d = days[i];
+            final sleepH = d.sleepHours;
+            final lateH = d.lateNightHours;
+            final sleepBar = maxSleep > 0 ? (sleepH / maxSleep).clamp(0.0, 1.0) : 0.0;
+            final lateBar = maxLate > 0 ? (lateH / maxLate).clamp(0.0, 1.0) : 0.0;
+            return Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: Column(
+                  children: [
+                    SizedBox(
+                      height: 56,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: Container(
+                              height: 56 * (d.tracked ? sleepBar : 0.08),
+                              decoration: BoxDecoration(
+                                color: d.tracked
+                                    ? ReportStudioTheme.purple.withValues(alpha: 0.85)
+                                    : ReportStudioTheme.border,
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 2),
+                          Expanded(
+                            child: Container(
+                              height: 56 * (lateBar > 0 ? lateBar : 0.06),
+                              decoration: BoxDecoration(
+                                color: lateH > 0
+                                    ? ReportStudioTheme.warning.withValues(alpha: 0.9)
+                                    : ReportStudioTheme.cardMuted,
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 4),
+                    Text(
+                      _weekday(d.date),
+                      style: const TextStyle(fontSize: 8, color: ReportStudioTheme.muted),
+                    ),
+                    Text(
+                      d.tracked ? '${sleepH.toStringAsFixed(1)}h' : '—',
+                      style: const TextStyle(fontSize: 7, fontWeight: FontWeight.w700),
+                    ),
+                    Text(
+                      lateH > 0 ? '${lateH.toStringAsFixed(1)}h' : '—',
+                      style: const TextStyle(fontSize: 7, color: ReportStudioTheme.warning),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          )
-          .toList(),
+            );
+          }),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Container(width: 8, height: 8, color: ReportStudioTheme.purple),
+            const SizedBox(width: 4),
+            const Text('Sleep', style: TextStyle(fontSize: 8, color: ReportStudioTheme.muted)),
+            const SizedBox(width: 12),
+            Container(width: 8, height: 8, color: ReportStudioTheme.warning),
+            const SizedBox(width: 4),
+            const Text('Late night', style: TextStyle(fontSize: 8, color: ReportStudioTheme.muted)),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -1109,15 +1226,27 @@ class StitchVisualSummaryCard extends StatelessWidget {
           ],
           const SizedBox(height: 16),
           const Text(
-            'CONDITION LEVELS (matches Home)',
+            'CONDITION LEVELS (7-day report)',
             style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: ReportStudioTheme.muted),
           ),
           const SizedBox(height: 10),
           _summaryBar('Stress', s.stress, MentalHealthSeverity.stressInsightBarColor),
           const SizedBox(height: 8),
-          _summaryBar('Anxiety', s.anxiety, MentalHealthSeverity.anxietyInsightBarColor),
-          const SizedBox(height: 8),
           _summaryBar('Depression', s.depression, MentalHealthSeverity.depressionInsightBarColor),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Text(
+                'Emotion',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: ReportStudioTheme.ink),
+              ),
+              const Spacer(),
+              Text(
+                s.emotion.isNotEmpty ? s.emotion : '—',
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: ReportStudioTheme.purple),
+              ),
+            ],
+          ),
         ],
       ),
     );

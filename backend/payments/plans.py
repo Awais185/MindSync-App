@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from subscriptions.constants import PLAN_BASIC, PLAN_DOCTOR, PLAN_PREMIUM
+from subscriptions.constants import PLAN_BASIC, PLAN_PREMIUM
 from subscriptions.models import SubscriptionPlan
 
-# Paid plans for Stripe PaymentSheet API (doctor plan shown only to approved doctors in app UI).
-PAID_PLAN_CODES = (PLAN_BASIC, PLAN_PREMIUM, PLAN_DOCTOR)
+# Paid plans for Stripe PaymentSheet API.
+PAID_PLAN_CODES = (PLAN_BASIC, PLAN_PREMIUM)
 
 FEATURE_LABELS = {
     'emotion_detection_limited': 'Emotion detection (limited)',
@@ -30,9 +30,6 @@ FEATURE_LABELS = {
     'priority_support': 'Priority support',
     'parental_control': 'Parental controls',
     'full_app_access': 'Full app access',
-    'doctor_patient_inbox': 'Patient inbox & messaging',
-    'doctor_appointments': 'Appointment booking from patients',
-    'doctor_patient_assist': 'Assist mental-health patients',
 }
 
 
